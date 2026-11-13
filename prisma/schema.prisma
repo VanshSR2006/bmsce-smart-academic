@@ -1,0 +1,1045 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------------------------
+// 1. Identity & Authorization
+// -------------------------------------------------------------
+
+model User {
+  id                 String     @id @default(uuid())
+  institutionalEmail String?    @unique @map("institutional_email")
+  displayName        String     @map("display_name")
+  authProvider       String     @default("DEMO") @map("auth_provider")
+  providerSubject    String?    @map("provider_subject")
+  status             String     @default("ACTIVE")
+  isDemo             Boolean    @default(true) @map("is_demo")
+  lastLoginAt        DateTime?  @map("last_login_at")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+
+  userRoles          UserRole[]
+  studentProfile     Student?
+  facultyProfile     Faculty?
+  notifications      Notification[]
+  chatMessages       ChatMessage[]
+  chatMembers        ChatMember[]
+  auditLogs          AuditLog[]     @relation("AuditActor")
+
+  createdConstraintProfiles SchedulingConstraintProfile[] @relation("ConstraintCreatedBy")
+  createdTimetables         Timetable[]                   @relation("TimetableCreatedBy")
+  createdTimetableVersions  TimetableVersion[]            @relation("VersionCreatedBy")
+  approvedTimetableVersions TimetableVersion[]            @relation("VersionApprovedBy")
+  publishedTimetableVersions TimetableVersion[]           @relation("VersionPublishedBy")
+  createdExceptions         ScheduleException[]           @relation("ExceptionCreatedBy")
+  approvedExceptions        ScheduleException[]           @relation("ExceptionApprovedBy")
+  requestedRuns             OptimizationRun[]             @relation("RunRequestedBy")
+  reportedDisruptions       Disruption[]                  @relation("DisruptionReportedBy")
+  createdProposals          RepairProposal[]              @relation("ProposalCreatedBy")
+  reviewedProposals         RepairProposal[]              @relation("ProposalReviewedBy")
+  createdExamCycles         ExaminationCycle[]            @relation("ExamCycleCreatedBy")
+  approvedExamCycles        ExaminationCycle[]            @relation("ExamCycleApprovedBy")
+  publishedExams            ExaminationPublication[]      @relation("ExamPublishedBy")
+  publishedTimetables       TimetablePublication[]        @relation("TimetablePublishedBy")
+  createdCrRequests         FacultyCrRequest[]            @relation("CrRequestCreatedBy")
+  createdFacultyAvailability FacultyAvailability[]        @relation("FacultyAvailabilityCreatedBy")
+
+  @@map("users")
+}
+
+model Role {
+  id          String     @id @default(uuid())
+  code        String     @unique
+  name        String
+  description String?
+
+  userRoles   UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id           String     @id @default(uuid())
+  userId       String     @map("user_id")
+  roleId       String     @map("role_id")
+  departmentId String?    @map("department_id")
+  clusterId    String?    @map("cluster_id")
+  sectionId    String?    @map("section_id")
+  validFrom    DateTime?  @map("valid_from")
+  validUntil   DateTime?  @map("valid_until")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role        @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  department   Department? @relation(fields: [departmentId], references: [id])
+  cluster      Cluster?    @relation(fields: [clusterId], references: [id])
+  section      Section?    @relation(fields: [sectionId], references: [id])
+
+  @@index([userId, roleId])
+  @@map("user_roles")
+}
+
+model Student {
+  id             String   @id @default(uuid())
+  userId         String   @unique @map("user_id")
+  sectionId      String   @map("section_id")
+  batchId        String?  @map("batch_id")
+  demoIdentifier String?  @map("demo_identifier") // DEMO identifier: e.g. DEMO-USN-2024-042
+  status         String   @default("ACTIVE")
+
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  section        Section  @relation(fields: [sectionId], references: [id])
+  batch          Batch?   @relation(fields: [batchId], references: [id])
+
+  @@map("students")
+}
+
+model Faculty {
+  id             String   @id @default(uuid())
+  userId         String   @unique @map("user_id")
+  departmentId   String   @map("department_id")
+  employeeCode   String?  @map("employee_code")
+  designation    String?
+  cabinLocation  String?  @map("cabin_location")
+  isDemo         Boolean  @default(true) @map("is_demo")
+  status         String   @default("ACTIVE")
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department     Department    @relation(fields: [departmentId], references: [id])
+
+  assignments    FacultyAssignment[]
+  availability   FacultyAvailability[]
+  workloadRules  FacultyWorkloadRule[]
+  sessions       TimetableSession[]
+  candidateSessions CandidateSession[]
+  affectedDisruptions Disruption[] @relation("DisruptedFaculty")
+  replacementExceptions ScheduleException[] @relation("ReplacementFaculty")
+  effectiveOccurrences ClassSessionOccurrence[] @relation("OccurrenceEffectiveFaculty")
+  crRequests     FacultyCrRequest[]
+
+  @@map("faculty")
+}
+
+// -------------------------------------------------------------
+// 2. Academic Structure
+// -------------------------------------------------------------
+
+model Department {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  isDemo      Boolean  @default(true) @map("is_demo")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  clusters    Cluster[]
+  programs    Program[]
+  sections    Section[]
+  subjects    Subject[]
+  faculty     Faculty[]
+  rooms       Room[]
+  timetables  Timetable[]
+  examCycles  ExaminationCycle[]
+  userRoles   UserRole[]
+
+  @@map("departments")
+}
+
+model Cluster {
+  id           String     @id @default(uuid())
+  departmentId String     @map("department_id")
+  code         String
+  name         String
+
+  department   Department @relation(fields: [departmentId], references: [id])
+  sections     Section[]
+  timetables   Timetable[]
+  userRoles    UserRole[]
+
+  @@unique([departmentId, code])
+  @@map("clusters")
+}
+
+model AcademicTerm {
+  id                String    @id @default(uuid())
+  academicYearLabel String    @map("academic_year_label") // "AY 2024-25"
+  termLabel         String    @map("term_label")          // "Odd Semester"
+  startDate         DateTime  @map("start_date")
+  endDate           DateTime  @map("end_date")
+  timezone          String    @default("Asia/Kolkata")
+  status            String    @default("ACTIVE")
+  isDemo            Boolean   @default(true) @map("is_demo")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  sections          Section[]
+  subjectOfferings  SubjectOffering[]
+  calendarEvents    AcademicCalendarEvent[]
+  bellSchedules     BellSchedule[]
+  constraintProfiles SchedulingConstraintProfile[]
+  timetables        Timetable[]
+  optimizationRuns  OptimizationRun[]
+  disruptions       Disruption[]
+  examinationCycles ExaminationCycle[]
+  facultyAvailability FacultyAvailability[]
+  facultyWorkloadRules FacultyWorkloadRule[]
+  roomAvailability  RoomAvailability[]
+
+  @@map("academic_terms")
+}
+
+model Program {
+  id           String     @id @default(uuid())
+  departmentId String     @map("department_id")
+  code         String
+  name         String
+  degreeLevel  String?    @map("degree_level")
+
+  department   Department @relation(fields: [departmentId], references: [id])
+  sections     Section[]
+
+  @@map("programs")
+}
+
+model Section {
+  id             String       @id @default(uuid())
+  departmentId   String       @map("department_id")
+  clusterId      String?      @map("cluster_id")
+  programId      String       @map("program_id")
+  academicTermId String       @map("academic_term_id")
+  semesterNumber Int          @map("semester_number")
+  sectionCode    String       @map("section_code") // "CSE-B"
+  displayName    String       @map("display_name")
+  studentCount   Int          @map("student_count")
+  status         String       @default("ACTIVE")
+
+  department     Department   @relation(fields: [departmentId], references: [id])
+  cluster        Cluster?     @relation(fields: [clusterId], references: [id])
+  program        Program      @relation(fields: [programId], references: [id])
+  academicTerm   AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  batches        Batch[]
+  students       Student[]
+  subjectOfferings SubjectOffering[]
+  sessions       TimetableSession[]
+  candidateSessions CandidateSession[]
+  userRoles      UserRole[]
+  crRequests     FacultyCrRequest[]
+
+  @@unique([academicTermId, programId, semesterNumber, sectionCode])
+  @@index([academicTermId, departmentId, semesterNumber])
+  @@map("sections")
+}
+
+model Batch {
+  id           String     @id @default(uuid())
+  sectionId    String     @map("section_id")
+  batchCode    String     @map("batch_code") // "B1"
+  displayName  String     @map("display_name") // "Batch B1 (01-25)"
+  studentCount Int        @map("student_count")
+
+  section      Section    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  students     Student[]
+  subjectOfferings SubjectOffering[]
+  sessions     TimetableSession[]
+  candidateSessions CandidateSession[]
+
+  @@unique([sectionId, batchCode])
+  @@map("batches")
+}
+
+model Subject {
+  id                     String     @id @default(uuid())
+  departmentId           String     @map("department_id")
+  subjectCode            String     @map("subject_code") // "22CSSPCDAA"
+  name                   String     // "Design & Analysis of Algorithms"
+  subjectType            String     @map("subject_type") // "THEORY", "LAB", "TUTORIAL"
+  defaultDurationPeriods Int        @default(1) @map("default_duration_periods")
+  isActive               Boolean    @default(true) @map("is_active")
+
+  department             Department @relation(fields: [departmentId], references: [id])
+  offerings              SubjectOffering[]
+
+  @@unique([departmentId, subjectCode])
+  @@map("subjects")
+}
+
+model SubjectOffering {
+  id                      String            @id @default(uuid())
+  subjectId               String            @map("subject_id")
+  academicTermId          String            @map("academic_term_id")
+  sectionId               String            @map("section_id")
+  batchId                 String?           @map("batch_id")
+  requiredPeriodsPerWeek  Float             @map("required_periods_per_week")
+  sessionDurationPeriods  Int               @map("session_duration_periods")
+  expectedStudentCount    Int               @map("expected_student_count")
+  requiresLab             Boolean           @default(false) @map("requires_lab")
+  requiresContiguousSlots Boolean           @default(false) @map("requires_contiguous_slots")
+  notes                   String?
+
+  subject                 Subject           @relation(fields: [subjectId], references: [id])
+  academicTerm            AcademicTerm      @relation(fields: [academicTermId], references: [id])
+  section                 Section           @relation(fields: [sectionId], references: [id])
+  batch                   Batch?            @relation(fields: [batchId], references: [id])
+
+  facultyAssignments      FacultyAssignment[]
+  sessions                TimetableSession[]
+  candidateSessions       CandidateSession[]
+  examinationEvents       ExaminationEvent[]
+
+  @@index([academicTermId, sectionId])
+  @@map("subject_offerings")
+}
+
+model FacultyAssignment {
+  id                 String          @id @default(uuid())
+  subjectOfferingId  String          @map("subject_offering_id")
+  facultyId          String          @map("faculty_id")
+  assignmentType     String          @default("PRIMARY") @map("assignment_type")
+  maxPeriodsPerWeek  Float?          @map("max_periods_per_week")
+  validFrom          DateTime?       @map("valid_from")
+  validUntil         DateTime?       @map("valid_until")
+  status             String          @default("ACTIVE")
+
+  subjectOffering    SubjectOffering @relation(fields: [subjectOfferingId], references: [id], onDelete: Cascade)
+  faculty            Faculty         @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+
+  @@index([facultyId, subjectOfferingId])
+  @@map("faculty_assignments")
+}
+
+// -------------------------------------------------------------
+// 3. Calendar & Bell Schedule
+// -------------------------------------------------------------
+
+model AcademicCalendarEvent {
+  id              String       @id @default(uuid())
+  academicTermId  String       @map("academic_term_id")
+  eventDate       DateTime     @map("event_date")
+  eventType       String       @map("event_type") // "HOLIDAY", "WORKING_DAY", "EXAM"
+  title           String
+  description     String?
+  isInstructional Boolean      @default(false) @map("is_instructional")
+
+  academicTerm    AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  @@map("academic_calendar_events")
+}
+
+model BellSchedule {
+  id              String       @id @default(uuid())
+  academicTermId  String       @map("academic_term_id")
+  name            String
+  effectiveFrom   DateTime     @map("effective_from")
+  effectiveUntil  DateTime?    @map("effective_until")
+  isDefault       Boolean      @default(true) @map("is_default")
+
+  academicTerm    AcademicTerm @relation(fields: [academicTermId], references: [id])
+  periods         TimePeriod[]
+
+  @@map("bell_schedules")
+}
+
+model TimePeriod {
+  id             String       @id @default(uuid())
+  bellScheduleId String       @map("bell_schedule_id")
+  periodNumber   Int          @map("period_number")
+  label          String       // "Period 1", "Tea Recess"
+  startTime      String       @map("start_time") // "08:30"
+  endTime        String       @map("end_time")   // "09:30"
+  periodType     String       @default("CLASS") @map("period_type") // "CLASS", "BREAK", "LUNCH"
+
+  bellSchedule   BellSchedule @relation(fields: [bellScheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([bellScheduleId, periodNumber])
+  @@map("time_periods")
+}
+
+model SchedulingConstraintProfile {
+  id              String       @id @default(uuid())
+  academicTermId  String       @map("academic_term_id")
+  name            String
+  version         Int          @default(1)
+  hardConstraints String       @map("hard_constraints") // JSON serialized
+  softWeights     String       @map("soft_weights")      // JSON serialized
+  assumptions     String?
+  createdById     String       @map("created_by_id")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  academicTerm    AcademicTerm @relation(fields: [academicTermId], references: [id])
+  createdBy       User         @relation("ConstraintCreatedBy", fields: [createdById], references: [id])
+
+  @@map("scheduling_constraint_profiles")
+}
+
+// -------------------------------------------------------------
+// 4. Resources: Faculty & Rooms
+// -------------------------------------------------------------
+
+model FacultyAvailability {
+  id               String       @id @default(uuid())
+  facultyId        String       @map("faculty_id")
+  academicTermId   String       @map("academic_term_id")
+  availabilityType String       @map("availability_type") // "AVAILABLE", "UNAVAILABLE", "PREFERRED"
+  dayOfWeek        Int?         @map("day_of_week")
+  startTime        String?      @map("start_time")
+  endTime          String?      @map("end_time")
+  specificDate     DateTime?    @map("specific_date")
+  reason           String?
+  createdById      String       @map("created_by_id")
+
+  faculty          Faculty      @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  academicTerm     AcademicTerm @relation(fields: [academicTermId], references: [id])
+  createdBy        User         @relation("FacultyAvailabilityCreatedBy", fields: [createdById], references: [id])
+
+  @@index([facultyId, academicTermId, specificDate, dayOfWeek])
+  @@map("faculty_availability")
+}
+
+model FacultyWorkloadRule {
+  id                   String       @id @default(uuid())
+  facultyId            String       @map("faculty_id")
+  academicTermId       String       @map("academic_term_id")
+  maxPeriodsPerDay     Int?         @map("max_periods_per_day")
+  maxPeriodsPerWeek    Int?         @map("max_periods_per_week")
+  maxConsecutivePeriods Int?        @map("max_consecutive_periods")
+  minBreakPeriods      Int?         @map("min_break_periods")
+  isDemoAssumption     Boolean      @default(true) @map("is_demo_assumption")
+
+  faculty              Faculty      @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  academicTerm         AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  @@map("faculty_workload_rules")
+}
+
+model Room {
+  id            String         @id @default(uuid())
+  departmentId  String?        @map("department_id")
+  roomCode      String         @unique @map("room_code") // "PJ-301"
+  name          String
+  roomType      String         @map("room_type") // "CLASSROOM", "LAB", "AUDITORIUM"
+  capacity      Int
+  locationLabel String?        @map("location_label")
+  isActive      Boolean        @default(true) @map("is_active")
+  isDemo        Boolean        @default(true) @map("is_demo")
+
+  department    Department?    @relation(fields: [departmentId], references: [id])
+  roomFeatures  RoomFeature[]
+  availability  RoomAvailability[]
+  sessions      TimetableSession[]
+  candidateSessions CandidateSession[]
+  affectedDisruptions Disruption[] @relation("DisruptedRoom")
+  replacementExceptions ScheduleException[] @relation("ReplacementRoom")
+  effectiveOccurrences ClassSessionOccurrence[] @relation("OccurrenceEffectiveRoom")
+  examAllocations ExaminationRoomAllocation[]
+
+  @@index([departmentId, roomType, isActive])
+  @@map("rooms")
+}
+
+model Feature {
+  id           String        @id @default(uuid())
+  code         String        @unique
+  name         String
+
+  roomFeatures RoomFeature[]
+
+  @@map("features")
+}
+
+model RoomFeature {
+  roomId    String  @map("room_id")
+  featureId String  @map("feature_id")
+
+  room      Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  feature   Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, featureId])
+  @@map("room_features")
+}
+
+model RoomAvailability {
+  id               String       @id @default(uuid())
+  roomId           String       @map("room_id")
+  academicTermId   String       @map("academic_term_id")
+  availabilityType String       @map("availability_type")
+  dayOfWeek        Int?         @map("day_of_week")
+  specificDate     DateTime?    @map("specific_date")
+  startTime        String       @map("start_time")
+  endTime          String       @map("end_time")
+  reason           String?
+
+  room             Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  academicTerm     AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  @@map("room_availability")
+}
+
+// -------------------------------------------------------------
+// 5. Timetable Lifecycle & Versioning
+// -------------------------------------------------------------
+
+model Timetable {
+  id             String             @id @default(uuid())
+  academicTermId String             @map("academic_term_id")
+  departmentId   String             @map("department_id")
+  clusterId      String?            @map("cluster_id")
+  name           String
+  scopeType      String             @default("DEPARTMENT") @map("scope_type")
+  status         String             @default("ACTIVE")
+  createdById    String             @map("created_by_id")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  academicTerm   AcademicTerm       @relation(fields: [academicTermId], references: [id])
+  department     Department         @relation(fields: [departmentId], references: [id])
+  cluster        Cluster?           @relation(fields: [clusterId], references: [id])
+  createdBy      User               @relation("TimetableCreatedBy", fields: [createdById], references: [id])
+
+  versions       TimetableVersion[]
+  optimizationRuns OptimizationRun[]
+
+  @@map("timetables")
+}
+
+model TimetableVersion {
+  id                         String             @id @default(uuid())
+  timetableId                String             @map("timetable_id")
+  versionNumber              Int                @map("version_number")
+  status                     String             @default("DRAFT") // "DRAFT", "PUBLISHED"
+  sourceType                 String             @default("MANUAL") @map("source_type")
+  optimizationCandidateId    String?            @map("optimization_candidate_id")
+  constraintProfileSnapshot  String?            @map("constraint_profile_snapshot")
+  validationStatus           String             @default("PASSED") @map("validation_status")
+  hardViolationCount         Int                @default(0) @map("hard_violation_count")
+  softPenalty                Float?             @map("soft_penalty")
+  createdById                String             @map("created_by_id")
+  approvedById               String?            @map("approved_by_id")
+  publishedById              String?            @map("published_by_id")
+  approvedAt                 DateTime?          @map("approved_at")
+  publishedAt                DateTime?          @map("published_at")
+  supersedesVersionId        String?            @map("supersedes_version_id")
+  changeSummary              String?            @map("change_summary")
+  createdAt                  DateTime           @default(now()) @map("created_at")
+
+  timetable                  Timetable          @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  createdBy                  User               @relation("VersionCreatedBy", fields: [createdById], references: [id])
+  approvedBy                 User?              @relation("VersionApprovedBy", fields: [approvedById], references: [id])
+  publishedBy                User?              @relation("VersionPublishedBy", fields: [publishedById], references: [id])
+  supersedesVersion          TimetableVersion?  @relation("VersionHistory", fields: [supersedesVersionId], references: [id])
+  childVersions              TimetableVersion[] @relation("VersionHistory")
+
+  sessions                   TimetableSession[]
+  publication                TimetablePublication?
+  exceptions                 ScheduleException[]
+
+  @@unique([timetableId, versionNumber])
+  @@index([timetableId, versionNumber])
+  @@map("timetable_versions")
+}
+
+model TimetableSession {
+  id                 String             @id @default(uuid())
+  timetableVersionId String             @map("timetable_version_id")
+  subjectOfferingId  String             @map("subject_offering_id")
+  facultyId          String             @map("faculty_id")
+  roomId             String             @map("room_id")
+  sectionId          String             @map("section_id")
+  batchId            String?            @map("batch_id")
+  dayOfWeek          Int                @map("day_of_week") // 1 = Monday
+  startTime          String             @map("start_time")  // "08:30"
+  endTime            String             @map("end_time")    // "09:30"
+  startPeriodNumber  Int?               @map("start_period_number")
+  durationPeriods    Int                @default(1) @map("duration_periods")
+  sessionKind        String             @default("LECTURE") @map("session_kind")
+  groupKey           String?            @map("group_key")
+  createdAt          DateTime           @default(now()) @map("created_at")
+
+  timetableVersion   TimetableVersion   @relation(fields: [timetableVersionId], references: [id], onDelete: Cascade)
+  subjectOffering    SubjectOffering    @relation(fields: [subjectOfferingId], references: [id])
+  faculty            Faculty            @relation(fields: [facultyId], references: [id])
+  room               Room               @relation(fields: [roomId], references: [id])
+  section            Section            @relation(fields: [sectionId], references: [id])
+  batch              Batch?             @relation(fields: [batchId], references: [id])
+
+  occurrences        ClassSessionOccurrence[]
+  exceptions         ScheduleException[]
+  disruptionLinks    DisruptionAffectedSession[]
+  repairChanges      RepairChange[]
+
+  @@index([timetableVersionId, dayOfWeek, startTime])
+  @@index([facultyId, dayOfWeek, startTime])
+  @@index([roomId, dayOfWeek, startTime])
+  @@map("timetable_sessions")
+}
+
+model TimetablePublication {
+  id                 String           @id @default(uuid())
+  timetableVersionId String           @unique @map("timetable_version_id")
+  publishedById      String           @map("published_by_id")
+  publishedAt        DateTime         @default(now()) @map("published_at")
+  publicationNote    String?          @map("publication_note")
+
+  timetableVersion   TimetableVersion @relation(fields: [timetableVersionId], references: [id], onDelete: Cascade)
+  publishedBy        User             @relation("TimetablePublishedBy", fields: [publishedById], references: [id])
+
+  @@map("timetable_publications")
+}
+
+model ScheduleException {
+  id                  String           @id @default(uuid())
+  timetableVersionId  String           @map("timetable_version_id")
+  originalSessionId   String?          @map("original_session_id")
+  exceptionDate       DateTime         @map("exception_date")
+  exceptionType       String           @map("exception_type") // "CANCEL", "SUBSTITUTE", "RESCHEDULE", "ROOM_CHANGE"
+  replacementFacultyId String?         @map("replacement_faculty_id")
+  replacementRoomId   String?          @map("replacement_room_id")
+  replacementStartTime String?         @map("replacement_start_time")
+  replacementEndTime  String?          @map("replacement_end_time")
+  status              String           @default("APPROVED")
+  reason              String
+  approvedById        String?          @map("approved_by_id")
+  publishedAt         DateTime?        @map("published_at")
+  createdById         String           @map("created_by_id")
+  createdAt           DateTime         @default(now()) @map("created_at")
+
+  timetableVersion    TimetableVersion @relation(fields: [timetableVersionId], references: [id], onDelete: Cascade)
+  originalSession     TimetableSession? @relation(fields: [originalSessionId], references: [id])
+  replacementFaculty  Faculty?         @relation("ReplacementFaculty", fields: [replacementFacultyId], references: [id])
+  replacementRoom     Room?            @relation("ReplacementRoom", fields: [replacementRoomId], references: [id])
+  approvedBy          User?            @relation("ExceptionApprovedBy", fields: [approvedById], references: [id])
+  createdBy           User             @relation("ExceptionCreatedBy", fields: [createdById], references: [id])
+
+  @@map("schedule_exceptions")
+}
+
+// -------------------------------------------------------------
+// 6. Optimization & Solver Runs
+// -------------------------------------------------------------
+
+model OptimizationRun {
+  id               String                  @id @default(uuid())
+  academicTermId   String                  @map("academic_term_id")
+  timetableId      String?                 @map("timetable_id")
+  requestedById    String                  @map("requested_by_id")
+  algorithmCode    String                  @map("algorithm_code") // "GREEDY", "CP_SAT"
+  algorithmVersion String                  @default("v4.2-csp") @map("algorithm_version")
+  solverParameters String?                 @map("solver_parameters")
+  inputSnapshot    String?                 @map("input_snapshot")
+  inputHash        String?                 @map("input_hash")
+  randomSeed       BigInt?                 @map("random_seed")
+  timeLimitSeconds Int                     @default(30) @map("time_limit_seconds")
+  status           String                  @default("COMPLETED")
+  solverStatus     String?                 @map("solver_status") // "OPTIMAL", "FEASIBLE"
+  startedAt        DateTime?               @map("started_at")
+  completedAt      DateTime?               @map("completed_at")
+  runtimeMs        BigInt?                 @map("runtime_ms")
+  failureCode      String?                 @map("failure_code")
+  failureMessage   String?                 @map("failure_message")
+  createdAt        DateTime                @default(now()) @map("created_at")
+
+  academicTerm     AcademicTerm            @relation(fields: [academicTermId], references: [id])
+  timetable        Timetable?              @relation(fields: [timetableId], references: [id])
+  requestedBy      User                    @relation("RunRequestedBy", fields: [requestedById], references: [id])
+
+  candidates       OptimizationCandidate[]
+
+  @@index([status, createdAt])
+  @@map("optimization_runs")
+}
+
+model OptimizationCandidate {
+  id                     String             @id @default(uuid())
+  optimizationRunId      String             @map("optimization_run_id")
+  candidateNumber        Int                @map("candidate_number")
+  label                  String             // "Candidate B (CP-SAT v4.2)"
+  solverStatus           String             @map("solver_status")
+  isFeasible             Boolean            @map("is_feasible")
+  hardViolationCount     Int                @default(0) @map("hard_violation_count")
+  softPenalty            Float?             @map("soft_penalty")
+  qualityScore           Float?             @map("quality_score")
+  unscheduledSessionCount Int               @default(0) @map("unscheduled_session_count")
+  metrics                String             // JSON stringified
+  explanation            String?
+  createdAt              DateTime           @default(now()) @map("created_at")
+
+  optimizationRun        OptimizationRun    @relation(fields: [optimizationRunId], references: [id], onDelete: Cascade)
+  sessions               CandidateSession[]
+
+  @@unique([optimizationRunId, candidateNumber])
+  @@index([optimizationRunId, isFeasible])
+  @@map("optimization_candidates")
+}
+
+model CandidateSession {
+  id                      String                @id @default(uuid())
+  optimizationCandidateId String                @map("optimization_candidate_id")
+  subjectOfferingId       String                @map("subject_offering_id")
+  facultyId               String                @map("faculty_id")
+  roomId                  String                @map("room_id")
+  sectionId               String                @map("section_id")
+  batchId                 String?               @map("batch_id")
+  dayOfWeek               Int                   @map("day_of_week")
+  startTime               String                @map("start_time")
+  endTime                 String                @map("end_time")
+  durationPeriods         Int                   @default(1) @map("duration_periods")
+  sessionKind             String                @default("LECTURE") @map("session_kind")
+  groupKey                String?               @map("group_key")
+
+  candidate               OptimizationCandidate @relation(fields: [optimizationCandidateId], references: [id], onDelete: Cascade)
+  subjectOffering         SubjectOffering       @relation(fields: [subjectOfferingId], references: [id])
+  faculty                 Faculty               @relation(fields: [facultyId], references: [id])
+  room                    Room                  @relation(fields: [roomId], references: [id])
+  section                 Section               @relation(fields: [sectionId], references: [id])
+  batch                   Batch?                @relation(fields: [batchId], references: [id])
+
+  @@map("candidate_sessions")
+}
+
+model ValidationReport {
+  id                 String            @id @default(uuid())
+  targetType         String            @map("target_type") // "CANDIDATE", "TIMETABLE_VERSION"
+  targetId           String            @map("target_id")
+  validatorVersion   String            @default("1.0.0") @map("validator_version")
+  status             String            @map("status") // "PASSED", "FAILED"
+  hardViolationCount Int               @default(0) @map("hard_violation_count")
+  softWarningCount   Int               @default(0) @map("soft_warning_count")
+  sessionsChecked    Int               @default(0) @map("sessions_checked")
+  runtimeMs          BigInt            @default(0) @map("runtime_ms")
+  summary            String?
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  issues             ValidationIssue[]
+  repairProposals    RepairProposal[]
+
+  @@map("validation_reports")
+}
+
+model ValidationIssue {
+  id                 String           @id @default(uuid())
+  validationReportId String           @map("validation_report_id")
+  severity           String           @map("severity") // "HARD", "SOFT", "INFO"
+  code               String
+  message            String
+  entityType         String?          @map("entity_type")
+  entityId           String?          @map("entity_id")
+  relatedEntityIds   String?          @map("related_entity_ids")
+  details            String?
+  createdAt          DateTime         @default(now()) @map("created_at")
+
+  validationReport   ValidationReport @relation(fields: [validationReportId], references: [id], onDelete: Cascade)
+
+  @@index([validationReportId, severity, code])
+  @@map("validation_issues")
+}
+
+// -------------------------------------------------------------
+// 7. Disruptions & Timetable Repair
+// -------------------------------------------------------------
+
+model Disruption {
+  id                String                      @id @default(uuid())
+  academicTermId    String                      @map("academic_term_id")
+  reportedById      String                      @map("reported_by_id")
+  disruptionType    String                      @map("disruption_type") // "FACULTY_UNAVAILABLE"
+  affectedFacultyId String?                     @map("affected_faculty_id")
+  affectedRoomId    String?                     @map("affected_room_id")
+  affectedDate      DateTime                    @map("affected_date")
+  startTime         String?                     @map("start_time")
+  endTime           String?                     @map("end_time")
+  reason            String
+  status            String                      @default("PROPOSALS_READY")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  academicTerm      AcademicTerm                @relation(fields: [academicTermId], references: [id])
+  reportedBy        User                        @relation("DisruptionReportedBy", fields: [reportedById], references: [id])
+  affectedFaculty   Faculty?                    @relation("DisruptedFaculty", fields: [affectedFacultyId], references: [id])
+  affectedRoom      Room?                       @relation("DisruptedRoom", fields: [affectedRoomId], references: [id])
+
+  affectedSessions  DisruptionAffectedSession[]
+  proposals         RepairProposal[]
+
+  @@index([status, affectedDate])
+  @@map("disruptions")
+}
+
+model DisruptionAffectedSession {
+  id                 String           @id @default(uuid())
+  disruptionId       String           @map("disruption_id")
+  timetableSessionId String           @map("timetable_session_id")
+
+  disruption         Disruption       @relation(fields: [disruptionId], references: [id], onDelete: Cascade)
+  timetableSession   TimetableSession @relation(fields: [timetableSessionId], references: [id])
+
+  @@unique([disruptionId, timetableSessionId])
+  @@map("disruption_affected_sessions")
+}
+
+model RepairProposal {
+  id                 String            @id @default(uuid())
+  disruptionId       String            @map("disruption_id")
+  strategyCode       String            @map("strategy_code") // "SUBSTITUTE_FACULTY"
+  status             String            @default("VALID")
+  impactMetrics      String?           @map("impact_metrics") // JSON stringified
+  validationReportId String?           @map("validation_report_id")
+  createdById        String            @map("created_by_id")
+  reviewedById       String?           @map("reviewed_by_id")
+  reviewComment      String?           @map("review_comment")
+  reviewedAt         DateTime?         @map("reviewed_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  disruption         Disruption        @relation(fields: [disruptionId], references: [id], onDelete: Cascade)
+  validationReport   ValidationReport? @relation(fields: [validationReportId], references: [id])
+  createdBy          User              @relation("ProposalCreatedBy", fields: [createdById], references: [id])
+  reviewedBy         User?             @relation("ProposalReviewedBy", fields: [reviewedById], references: [id])
+
+  changes            RepairChange[]
+
+  @@index([disruptionId, status])
+  @@map("repair_proposals")
+}
+
+model RepairChange {
+  id                 String           @id @default(uuid())
+  repairProposalId   String           @map("repair_proposal_id")
+  timetableSessionId String           @map("timetable_session_id")
+  changeType         String           @map("change_type") // "FACULTY", "ROOM", "TIME"
+  oldValues          String           @map("old_values")
+  proposedValues     String           @map("proposed_values")
+  createdAt          DateTime         @default(now()) @map("created_at")
+
+  repairProposal     RepairProposal   @relation(fields: [repairProposalId], references: [id], onDelete: Cascade)
+  timetableSession   TimetableSession @relation(fields: [timetableSessionId], references: [id])
+
+  @@map("repair_changes")
+}
+
+// -------------------------------------------------------------
+// 8. Class Communication & Occurrences
+// -------------------------------------------------------------
+
+model ClassSessionOccurrence {
+  id                  String           @id @default(uuid())
+  timetableSessionId  String           @map("timetable_session_id")
+  sessionDate         DateTime         @map("session_date")
+  effectiveFacultyId  String           @map("effective_faculty_id")
+  effectiveRoomId     String           @map("effective_room_id")
+  effectiveStartTime  String           @map("effective_start_time")
+  effectiveEndTime    String           @map("effective_end_time")
+  status              String           @default("UPCOMING")
+
+  timetableSession    TimetableSession @relation(fields: [timetableSessionId], references: [id])
+  effectiveFaculty    Faculty          @relation("OccurrenceEffectiveFaculty", fields: [effectiveFacultyId], references: [id])
+  effectiveRoom       Room             @relation("OccurrenceEffectiveRoom", fields: [effectiveRoomId], references: [id])
+
+  chatSpace           ChatSpace?
+
+  @@unique([timetableSessionId, sessionDate])
+  @@map("class_session_occurrences")
+}
+
+model ChatSpace {
+  id                       String                 @id @default(uuid())
+  classSessionOccurrenceId String                 @unique @map("class_session_occurrence_id")
+  opensAt                  DateTime               @map("opens_at")
+  closesAt                 DateTime               @map("closes_at")
+  status                   String                 @default("OPEN")
+  retentionUntil           DateTime?              @map("retention_until")
+  createdAt                DateTime               @default(now()) @map("created_at")
+
+  occurrence               ClassSessionOccurrence @relation(fields: [classSessionOccurrenceId], references: [id], onDelete: Cascade)
+
+  members                  ChatMember[]
+  messages                 ChatMessage[]
+
+  @@map("chat_spaces")
+}
+
+model ChatMember {
+  id             String    @id @default(uuid())
+  chatSpaceId    String    @map("chat_space_id")
+  userId         String    @map("user_id")
+  membershipRole String    @map("membership_role") // "FACULTY", "CR", "STUDENT"
+  canSendMessages Boolean  @default(false) @map("can_send_messages")
+
+  chatSpace      ChatSpace @relation(fields: [chatSpaceId], references: [id], onDelete: Cascade)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatSpaceId, userId])
+  @@map("chat_members")
+}
+
+model ChatMessage {
+  id           String              @id @default(uuid())
+  chatSpaceId  String              @map("chat_space_id")
+  senderUserId String              @map("sender_user_id")
+  messageType  String              @default("TEXT") @map("message_type")
+  body         String
+  isImportant  Boolean             @default(false) @map("is_important")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  editedAt     DateTime?           @map("edited_at")
+  deletedAt    DateTime?           @map("deleted_at")
+
+  chatSpace    ChatSpace           @relation(fields: [chatSpaceId], references: [id], onDelete: Cascade)
+  senderUser   User                @relation(fields: [senderUserId], references: [id])
+
+  attachments  MessageAttachment[]
+
+  @@index([chatSpaceId, createdAt])
+  @@map("chat_messages")
+}
+
+model MessageAttachment {
+  id               String      @id @default(uuid())
+  messageId        String      @map("message_id")
+  storageKey       String      @map("storage_key")
+  originalFilename String      @map("original_filename")
+  mimeType         String      @map("mime_type")
+  sizeBytes        BigInt      @map("size_bytes")
+  scanStatus       String      @default("CLEAN") @map("scan_status")
+  createdAt        DateTime    @default(now()) @map("created_at")
+
+  message          ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@map("message_attachments")
+}
+
+model FacultyCrRequest {
+  id          String    @id @default(uuid())
+  sectionId   String    @map("section_id")
+  facultyId   String    @map("faculty_id")
+  createdById String    @map("created_by_id")
+  subject     String
+  body        String
+  category    String    @default("SCHEDULE")
+  status      String    @default("OPEN")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  resolvedAt  DateTime? @map("resolved_at")
+
+  section     Section   @relation(fields: [sectionId], references: [id])
+  faculty     Faculty   @relation(fields: [facultyId], references: [id])
+  createdBy   User      @relation("CrRequestCreatedBy", fields: [createdById], references: [id])
+
+  @@map("faculty_cr_requests")
+}
+
+// -------------------------------------------------------------
+// 9. Examinations
+// -------------------------------------------------------------
+
+model ExaminationCycle {
+  id             String                   @id @default(uuid())
+  academicTermId String                   @map("academic_term_id")
+  departmentId   String                   @map("department_id")
+  name           String                   // "CIE-2 Timetable (Oct 28 - Nov 02, 2024)"
+  examType       String                   @map("exam_type") // "CIE", "SEE"
+  status         String                   @default("PUBLISHED")
+  versionNumber  Int                      @default(1) @map("version_number")
+  createdById    String                   @map("created_by_id")
+  approvedById   String?                  @map("approved_by_id")
+  publishedAt    DateTime?                @map("published_at")
+  createdAt      DateTime                 @default(now()) @map("created_at")
+
+  academicTerm   AcademicTerm             @relation(fields: [academicTermId], references: [id])
+  department     Department               @relation(fields: [departmentId], references: [id])
+  createdBy      User                     @relation("ExamCycleCreatedBy", fields: [createdById], references: [id])
+  approvedBy     User?                    @relation("ExamCycleApprovedBy", fields: [approvedById], references: [id])
+
+  events         ExaminationEvent[]
+  publications   ExaminationPublication[]
+
+  @@map("examination_cycles")
+}
+
+model ExaminationEvent {
+  id                 String                       @id @default(uuid())
+  examinationCycleId String                       @map("examination_cycle_id")
+  subjectOfferingId  String                       @map("subject_offering_id")
+  examDate           DateTime                     @map("exam_date")
+  startTime          String                       @map("start_time") // "09:30"
+  endTime            String                       @map("end_time")   // "11:00"
+  durationMinutes    Int                          @default(90) @map("duration_minutes")
+  instructions       String?
+  createdAt          DateTime                     @default(now()) @map("created_at")
+
+  examinationCycle   ExaminationCycle             @relation(fields: [examinationCycleId], references: [id], onDelete: Cascade)
+  subjectOffering    SubjectOffering              @relation(fields: [subjectOfferingId], references: [id])
+
+  roomAllocations    ExaminationRoomAllocation[]
+
+  @@index([examinationCycleId, examDate, startTime])
+  @@map("examination_events")
+}
+
+model ExaminationRoomAllocation {
+  id                   String           @id @default(uuid())
+  examinationEventId   String           @map("examination_event_id")
+  roomId               String           @map("room_id")
+  allocatedStudentCount Int             @map("allocated_student_count")
+  createdAt            DateTime         @default(now()) @map("created_at")
+
+  examinationEvent     ExaminationEvent @relation(fields: [examinationEventId], references: [id], onDelete: Cascade)
+  room                 Room             @relation(fields: [roomId], references: [id])
+
+  @@map("examination_room_allocations")
+}
+
+model ExaminationPublication {
+  id                       String           @id @default(uuid())
+  examinationCycleId       String           @map("examination_cycle_id")
+  versionNumber            Int              @map("version_number")
+  publishedById            String           @map("published_by_id")
+  publishedAt              DateTime         @default(now()) @map("published_at")
+  supersedesPublicationId  String?          @map("supersedes_publication_id")
+  changeSummary            String?          @map("change_summary")
+
+  examinationCycle         ExaminationCycle @relation(fields: [examinationCycleId], references: [id], onDelete: Cascade)
+  publishedBy              User             @relation("ExamPublishedBy", fields: [publishedById], references: [id])
+
+  @@map("examination_publications")
+}
+
+// -------------------------------------------------------------
+// 10. Notifications & Audit Logs
+// -------------------------------------------------------------
+
+model Notification {
+  id               String    @id @default(uuid())
+  userId           String    @map("user_id")
+  notificationType String    @map("notification_type")
+  title            String
+  body             String
+  resourceType     String?   @map("resource_type")
+  resourceId       String?   @map("resource_id")
+  readAt           DateTime? @map("read_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?  @map("actor_user_id")
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  scope        String?  // JSON stringified
+  beforeState  String?  @map("before_state")
+  afterState   String?  @map("after_state")
+  ipHash       String?  @map("ip_hash")
+  requestId    String?  @map("request_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  actorUser    User?    @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@map("audit_logs")
+}

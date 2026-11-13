@@ -1,0 +1,78 @@
+# =============================================================================
+# BMSCE Smart Academic — Render Infrastructure as Code Blueprint
+# Reference: https://docs.render.com/infrastructure-as-code
+#
+# Services defined:
+#   1. bmsce-academic-api       (Public Web Service, Node.js + Express + Socket.IO)
+#   2. bmsce-academic-optimizer (Private Service, Python FastAPI + OR-Tools)
+#   3. bmsce-academic-redis     (Managed Key Value / Redis)
+#   4. bmsce-academic-db        (Managed PostgreSQL 16)
+# =============================================================================
+
+services:
+
+  # ── 1. Express API + Socket.IO Public Web Service ──────────────────────────
+  - type: web
+    name: bmsce-academic-api
+    runtime: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: starter
+    healthCheckPath: /api/v1/health
+    # Pre-deployment migration hook runs in an ephemeral container before live traffic switch.
+    # If migrations fail, the deployment is aborted safely and the active release remains online.
+    preDeployCommand: npx prisma migrate deploy --schema=./prisma/schema.prisma
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bmsce-academic-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: bmsce-academic-redis
+          property: connectionString
+      - key: OPTIMIZER_URL
+        value: http://bmsce-academic-optimizer:8000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: https://bmsce-academic.vercel.app,https://academic.bmsce.ac.in
+      - key: IS_DEMO_ENV
+        value: "false"
+      - key: INITIAL_DATA_MODE
+        value: PRODUCTION
+
+  # ── 2. Timetable Optimizer Private Service ─────────────────────────────────
+  - type: pserv
+    name: bmsce-academic-optimizer
+    runtime: docker
+    dockerfilePath: apps/optimizer/Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: starter
+    envVars:
+      - key: CORS_ORIGIN
+        value: http://bmsce-academic-api:3001,https://bmsce-academic.vercel.app
+
+  # ── 3. Redis-Compatible Key Value Service ──────────────────────────────────
+  - type: keyvalue
+    name: bmsce-academic-redis
+    region: singapore
+    plan: starter
+    ipAllowList: [] # Strictly internal private network access
+
+# ── 4. Managed PostgreSQL 16 ─────────────────────────────────────────────────
+databases:
+  - name: bmsce-academic-db
+    databaseName: bmsce_academic
+    user: bmsce_user
+    region: singapore
+    plan: starter
+    postgresMajorVersion: 16
+    ipAllowList: [] # Strictly internal private network access

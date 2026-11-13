@@ -1,0 +1,157 @@
+# =============================================================================
+# BMSCE Smart Academic — Production Docker Compose
+# File: infra/compose.production.yaml
+#
+# Usage:
+#   docker compose -f infra/compose.production.yaml --env-file .env.production up -d
+#
+# Prerequisites:
+#   1. Create .env.production from .env.example with real production credentials.
+#   2. Build images first:
+#        docker compose -f infra/compose.production.yaml build
+#   3. Run database migrations before first start:
+#        docker compose -f infra/compose.production.yaml run --rm api \
+#          npx prisma db push
+#
+# SECURITY NOTES:
+#   - Database and Redis ports are NOT exposed to the host.
+#   - All services communicate via the internal `bmsce_network` bridge.
+#   - Only the web (port 80) is exposed; reverse-proxy to HTTPS externally.
+#   - Set strong values for JWT_SECRET, POSTGRES_PASSWORD in .env.production.
+# =============================================================================
+
+name: bmsce-production
+
+services:
+
+  # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: bmsce_pg_prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bmsce}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}         # Required; no default
+      POSTGRES_DB: ${POSTGRES_DB:-bmsce_academic}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # NO ports: exposed — only internal network access
+    networks:
+      - bmsce_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bmsce} -d ${POSTGRES_DB:-bmsce_academic}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: bmsce_redis_prod
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    # NO ports: exposed — only internal network access
+    networks:
+      - bmsce_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Timetable Optimizer (Python/FastAPI) ────────────────────────────────────
+  optimizer:
+    build:
+      context: ..
+      dockerfile: apps/optimizer/Dockerfile
+    image: bmsce-optimizer:latest
+    container_name: bmsce_optimizer_prod
+    restart: always
+    environment:
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://academic.bmsce.ac.in}
+    # NO ports: exposed — only internal network access via service name "optimizer"
+    networks:
+      - bmsce_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Express API ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    image: bmsce-api:latest
+    container_name: bmsce_api_prod
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bmsce}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bmsce_academic}?schema=public
+      REDIS_URL: redis://redis:6379
+      OPTIMIZER_URL: http://optimizer:8000
+      JWT_SECRET: ${JWT_SECRET}                       # Required; no default
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://academic.bmsce.ac.in}
+      IS_DEMO_ENV: "false"
+      INITIAL_DATA_MODE: PRODUCTION
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      optimizer:
+        condition: service_healthy
+    # Optionally expose API on host for testing; remove for production behind nginx
+    # ports:
+    #   - "3001:3001"
+    networks:
+      - bmsce_network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3001/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Nginx + React Frontend ───────────────────────────────────────────────────
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://academic.bmsce.ac.in/api/v1}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL:-https://academic.bmsce.ac.in}
+    image: bmsce-web:latest
+    container_name: bmsce_web_prod
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - bmsce_network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  bmsce_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
