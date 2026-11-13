@@ -207,7 +207,7 @@ export const ClassCommunicationCenter: React.FC = () => {
     // Connect Socket.IO for live chamber messaging
     // Prioritize VITE_SOCKET_URL; for Vercel default to Render backend; for dev fallback to port 3001
     const defaultProdSocket = typeof window !== 'undefined' && window.location.origin.includes('vercel.app')
-      ? 'https://bmsce-academic-api.onrender.com'
+      ? 'https://campusflow-api.onrender.com'
       : '/';
     const socketUrl = import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV && typeof window !== 'undefined' && window.location.origin.includes('5173') ? 'http://localhost:3001' : defaultProdSocket);
     const socket = io(socketUrl, { transports: ['websocket', 'polling'] });

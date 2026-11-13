@@ -1,79 +1,73 @@
-# BMSCE Smart Academic — Cloud Environment Variables Guide
+# CampusFlow — Cloud Environment Variables
 
-> Reference guide for configuring environment variables on **Vercel** and **Render**.  
-> **NEVER commit actual production secrets to Git.**
+Never commit actual values. Set these in the provider dashboards only.
 
----
+## 1. Vercel (Hobby) — frontend build-time
 
-## 1. Vercel (Frontend Project Settings)
-
-Configure these in the Vercel Dashboard under **Project Settings → Environment Variables**:
-
-| Variable Name | Required? | Example Production Value | Purpose & Notes |
+| Name | Required | Where | Purpose |
 |---|---|---|---|
-| `VITE_API_BASE_URL` | Optional | `https://bmsce-academic-api.onrender.com/api/v1` | Explicit public URL for the Render API. If omitted, frontend falls back to relative `/api/v1` which is proxied by `vercel.json` rewrites. |
-| `VITE_SOCKET_URL` | **Required** | `https://bmsce-academic-api.onrender.com` | Public URL for Socket.IO WebSocket connections. Must point directly to the Render Web Service (Vercel cannot proxy persistent WebSockets). |
+| `VITE_API_BASE_URL` | Recommended | Vercel → Project → Environment Variables | Public API origin including `/api/v1`, e.g. `https://campusflow-api.onrender.com/api/v1`. If omitted, the SPA uses relative `/api/v1` (Vercel rewrite). |
+| `VITE_SOCKET_URL` | Required | Vercel | Public API origin for Socket.IO, e.g. `https://campusflow-api.onrender.com`. Vercel cannot proxy WebSockets. |
 
-> **Note on Build Time**: In Vite, `VITE_*` variables are baked into JavaScript bundles at build time. If you update either variable in Vercel, you must trigger a **Redeploy** for the change to take effect.
+Redeploy the frontend after changing any `VITE_*` variable.
 
----
+Do **not** set `DATABASE_URL`, `JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, or any pooler password on Vercel.
 
-## 2. Render Public Web Service (`bmsce-academic-api`)
+## 2. Render (Free) — `campusflow-api`
 
-These variables are defined in `render.yaml` and injected automatically by Render:
-
-| Variable Name | Source in `render.yaml` | Manual Override Example | Purpose & Security Notes |
+| Name | Required | Source | Purpose |
 |---|---|---|---|
-| `NODE_ENV` | `value: production` | `production` | Enables production security checks, disables stack trace leaking, and activates strict JWT validation. |
-| `PORT` | `value: 3001` | `3001` | Internal container port on which Express listens. |
-| `DATABASE_URL` | `fromDatabase: { name: bmsce-academic-db, property: connectionString }` | `postgresql://bmsce_user:pass@pg.render.internal:5432/bmsce_academic` | Private PostgreSQL connection string. Managed automatically by Render Blueprint. |
-| `REDIS_URL` | `fromService: { type: redis, name: bmsce-academic-redis, property: connectionString }` | `redis://red-xxxx:6379` | Private Redis connection string. Managed automatically by Render Blueprint. |
-| `OPTIMIZER_URL` | `value: http://bmsce-academic-optimizer:8000` | `http://bmsce-academic-optimizer:8000` | Private internal DNS resolution for the optimizer service. |
-| `JWT_SECRET` | `generateValue: true` | *(Auto-generated 64-char string)* | Cryptographic secret for signing and verifying JWT tokens. Render generates a unique random string. |
-| `CORS_ORIGIN` | `value: https://bmsce-academic.vercel.app,https://academic.bmsce.ac.in` | `https://your-vercel-domain.vercel.app` | Comma-separated list of allowed frontend origins. Supports multiple domains. |
-| `IS_DEMO_ENV` | `value: "false"` | `false` | Must strictly be `false` in production. Completely disables unauthenticated role bypass. |
-| `INITIAL_DATA_MODE` | `value: PRODUCTION` | `PRODUCTION` | Disables demo mocks. |
-| `RUN_MIGRATIONS` | `value: "true"` | `true` | When `true`, container startup script runs `npx prisma migrate deploy` automatically before starting server. |
+| `NODE_ENV` | Yes | `render.yaml` = `production` | Production JWT and CORS rules. |
+| `PORT` | Injected | Render | Do not hardcode. Express reads `process.env.PORT`. |
+| `DATABASE_URL` | Yes | Render Dashboard (sync: false) | Supabase **Session Pooler** URI on port **5432**, `sslmode=require`, database `postgres`, user `postgres.ctxpnicaqjygakszmhgs`. |
+| `JWT_SECRET` | Yes | `generateValue: true` | Min 32 characters. Used to sign JWTs. |
+| `CORS_ORIGIN` | Yes | Dashboard after first Vercel URL is known | Exact frontend origin, comma-separated if needed. |
+| `ALLOW_DEMO_AUTH` | Yes for demo | `render.yaml` = `true` | Enables `/auth/demo-users` and `/auth/demo-login` on the public demo. |
+| `IS_DEMO_ENV` | Yes for demo | `render.yaml` = `true` | Marks synthetic demo mode. |
+| `INITIAL_DATA_MODE` | Optional | `SYNTHETIC` | Documentation flag; seed is separate. |
+| `DEMO_PASSWORD_HASH` | Recommended | Dashboard | bcrypt hash of the shared demo password for `POST /api/v1/auth/login`. |
+| `REDIS_URL` | Omit | — | In-memory fallback is sufficient for the demo. |
+| `OPTIMIZER_URL` | Omit | — | Python OR-Tools is not deployed on Render Free. Solver uses the existing API fallback. |
 
----
+Production migrations: `npx prisma migrate deploy` in the Render start command. Never `prisma db push` or `prisma migrate reset`.
 
-## 3. Render Private Service (`bmsce-academic-optimizer`)
+## 3. Supabase (Free) — PostgreSQL only
 
-| Variable Name | Source in `render.yaml` | Value | Purpose |
-|---|---|---|---|
-| `CORS_ORIGIN` | `value: http://bmsce-academic-api:3001,https://bmsce-academic.vercel.app` | Same | Allowed callers for FastAPI endpoints. |
+Use the Dashboard connection string. Do not put the service-role key in this app.
 
----
+| Item | Value to use |
+|---|---|
+| Project ref | `ctxpnicaqjygakszmhgs` |
+| Region | Mumbai (`ap-south-1`) |
+| Pooler host | `aws-1-ap-south-1.pooler.supabase.com` |
+| Port | `5432` (Session Pooler; not `6543`) |
+| Database | `postgres` |
+| User | `postgres.ctxpnicaqjygakszmhgs` |
 
-## 4. Render Managed PostgreSQL (`bmsce-academic-db`)
+One-shot local scripts (PowerShell, does not write `.env`):
 
-| Setting | Value in `render.yaml` | Notes |
-|---|---|---|
-| Database Name | `bmsce_academic` | Default application database. |
-| Database User | `bmsce_user` | Generated non-root database owner. |
-| Version | `16` | PostgreSQL 16. |
-| Access Control | `ipAllowList: []` | Disallows public internet connections. Only reachable via Render's private network. |
-
----
-
-## 5. Render Key Value (`bmsce-academic-redis`)
-
-| Setting | Value in `render.yaml` | Notes |
-|---|---|---|
-| Engine | Redis 7 Compatible | In-memory cache and background job tracking. |
-| Access Control | `ipAllowList: []` | Disallows public internet connections. |
-
----
-
-## 6. How to Generate Production Secrets Manually
-
-If not using Render's `generateValue: true`, generate cryptographically random secrets from your local terminal:
-
-```bash
-# Generate 64-character hex secret for JWT_SECRET:
-openssl rand -hex 32
-
-# Generate 32-character random database password:
-openssl rand -base64 24
+```powershell
+$env:SUPABASE_SESSION_POOLER_URI="postgresql://postgres.ctxpnicaqjygakszmhgs:YOUR_PASSWORD@aws-1-ap-south-1.pooler.supabase.com:5432/postgres"
+$env:SUPABASE_PROJECT_REF="ctxpnicaqjygakszmhgs"
+$env:SUPABASE_EXPECTED_HOST="aws-1-ap-south-1.pooler.supabase.com"
+npx tsx scripts/verify_supabase_preflight.ts
+npx tsx scripts/verify_supabase_schema.ts
+$env:ALLOW_SUPABASE_SEED="true"
+npx tsx scripts/seed_supabase.ts
 ```
 
+## 4. Demo accounts (fictional)
+
+Shared password (public demo): `CampusFlowDemo2026!`
+Store only the bcrypt hash in `DEMO_PASSWORD_HASH`.
+
+| Role | Email |
+|---|---|
+| PLATFORM_ADMIN | `admin.demo@campusflow.example` |
+| DEPT_HEAD | `hod.demo@campusflow.example` |
+| FACULTY | `daa.faculty.demo@campusflow.example` (and other `*.faculty.demo@campusflow.example`) |
+| CR | `cr.demo@campusflow.example` |
+| STUDENT | `student.demo@campusflow.example` |
+
+Persona switcher: `POST /api/v1/auth/demo-login` with `{ "role": "DEPT_HEAD" }` when `ALLOW_DEMO_AUTH=true`.
+Password login: `POST /api/v1/auth/login` with `{ "email", "password" }` (bcrypt compare).

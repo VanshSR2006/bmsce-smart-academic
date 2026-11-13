@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/v1/:path*",
-      "destination": "https://bmsce-academic-api.onrender.com/api/v1/:path*"
+      "destination": "https://campusflow-api.onrender.com/api/v1/:path*"
     },
     {
       "source": "/(.*)",
@@ -15,4 +15,3 @@
     }
   ]
 }
-

@@ -20,12 +20,12 @@ interface AuthContextType {
 
 const defaultUser: UserPersona = {
   id: 'hod-1',
-  displayName: 'Dr. K. R. Suresh',
-  institutionalEmail: 'hod.cse@bmsce.ac.in',
+  displayName: 'Demo Head of Department',
+  institutionalEmail: 'hod.demo@campusflow.example',
   role: 'DEPT_HEAD',
   department: 'Department of Computer Science & Engineering',
   designation: 'HOD CSE • Professor',
-  demoIdentifier: 'EMP-CSE-001',
+  demoIdentifier: 'DEMO-FAC-001',
 };
 
 const AuthContext = createContext<AuthContextType>({

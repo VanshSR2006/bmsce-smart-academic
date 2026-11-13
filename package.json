@@ -12,10 +12,17 @@
     "dev:web": "npm run dev --workspace=apps/web",
     "dev:optimizer": "npm run dev:optimizer",
     "build": "npm run build --workspaces --if-present",
+    "start": "node apps/api/dist/server.js",
     "test": "npm run test --workspaces --if-present",
     "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "verify:supabase": "tsx scripts/verify_supabase_preflight.ts",
+    "verify:supabase:schema": "tsx scripts/verify_supabase_schema.ts",
+    "seed:supabase": "tsx scripts/seed_supabase.ts"
+  },
+  "engines": {
+    "node": "22.x"
   },
   "devDependencies": {
     "prisma": "^5.22.0",

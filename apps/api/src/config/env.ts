@@ -41,6 +41,7 @@ export const config = {
   jwtSecret: rawJwtSecret || defaultSecret,
   corsOrigin: parseCorsOrigin(process.env.CORS_ORIGIN, isProduction),
   databaseUrl: process.env.DATABASE_URL || 'file:./dev.db',
-  // Demo mode is strictly forbidden in production
-  isDemo: !isProduction && process.env.IS_DEMO_ENV === 'true',
+  // Header bypass stays non-production only. Public demo login may be enabled on free-tier cloud.
+  allowDemoAuth: process.env.ALLOW_DEMO_AUTH === 'true',
+  isDemo: process.env.ALLOW_DEMO_AUTH === 'true' || (!isProduction && process.env.IS_DEMO_ENV === 'true'),
 };

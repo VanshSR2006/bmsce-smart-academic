@@ -3,6 +3,8 @@ Test CP-SAT solver directly.
 """
 import sys
 import os
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from test_optimizer import request

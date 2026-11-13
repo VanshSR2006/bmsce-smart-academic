@@ -1,12 +1,27 @@
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
+const databaseUrl = process.env.DATABASE_URL || '';
+const isLocalTarget = /localhost|127\.0\.0\.1/i.test(databaseUrl);
+const isSupabaseTarget = /pooler\.supabase\.com/i.test(databaseUrl);
+
+if (isSupabaseTarget && process.env.ALLOW_SUPABASE_SEED !== 'true') {
+  console.error('❌ Refusing to seed a Supabase database without ALLOW_SUPABASE_SEED=true.');
+  process.exit(1);
+}
+
+if (!isLocalTarget && !isSupabaseTarget) {
+  console.error('❌ Refusing to seed an unrecognized DATABASE_URL host.');
+  process.exit(1);
+}
+
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Starting BMSCE Smart Academic Deterministic Seed...');
+  console.log(isSupabaseTarget ? '   Target: Supabase Session Pooler (remote demo)' : '   Target: local database');
 
-  // Reset demo tables for clean idempotent seeding
+  // Reset demo tables for clean idempotent seeding (FK-safe order)
   await prisma.auditLog.deleteMany({});
   await prisma.notification.deleteMany({});
   await prisma.messageAttachment.deleteMany({});
@@ -37,6 +52,11 @@ async function main() {
   await prisma.examinationEvent.deleteMany({});
   await prisma.examinationPublication.deleteMany({});
   await prisma.examinationCycle.deleteMany({});
+  await prisma.facultyCrRequest.deleteMany({});
+  await prisma.academicCalendarEvent.deleteMany({});
+  await prisma.schedulingConstraintProfile.deleteMany({});
+  await prisma.roomAvailability.deleteMany({});
+  await prisma.roomFeature.deleteMany({});
   await prisma.student.deleteMany({});
   await prisma.facultyWorkloadRule.deleteMany({});
   await prisma.facultyAvailability.deleteMany({});
@@ -46,6 +66,7 @@ async function main() {
   await prisma.program.deleteMany({});
   await prisma.userRole.deleteMany({});
   await prisma.user.deleteMany({});
+  await prisma.academicTerm.deleteMany({});
 
 
   // 1. Roles
@@ -152,12 +173,24 @@ async function main() {
     },
   });
 
-  // 5. Users and Profiles
-  // HOD
+  // 5. Users and Profiles — fictional demo personas only
+  const adminUser = await prisma.user.create({
+    data: {
+      institutionalEmail: 'admin.demo@campusflow.example',
+      displayName: 'Demo Platform Admin',
+      isDemo: true,
+      userRoles: {
+        create: {
+          roleId: roleMap['PLATFORM_ADMIN'],
+        },
+      },
+    },
+  });
+
   const hodUser = await prisma.user.create({
     data: {
-      institutionalEmail: 'hod.cse@bmsce.ac.in',
-      displayName: 'Dr. K. R. Suresh',
+      institutionalEmail: 'hod.demo@campusflow.example',
+      displayName: 'Demo Head of Department',
       isDemo: true,
       userRoles: {
         create: {
@@ -168,7 +201,7 @@ async function main() {
       facultyProfile: {
         create: {
           departmentId: dept.id,
-          employeeCode: 'EMP-CSE-001',
+          employeeCode: 'DEMO-FAC-001',
           designation: 'HOD CSE - Professor',
           cabinLocation: 'PJ-401 HOD Chamber',
         },
@@ -176,15 +209,14 @@ async function main() {
     },
   });
 
-  // Faculty Members
   const facultyData = [
-    { name: 'Dr. A. Ramanathan', email: 'ramanathan.cse@bmsce.ac.in', code: 'EMP-CSE-011', desig: 'Professor & Course Coordinator DAA', cabin: 'PJ-310' },
-    { name: 'Prof. Sneha K.', email: 'sneha.cse@bmsce.ac.in', code: 'EMP-CSE-012', desig: 'Assistant Professor DBMS', cabin: 'PJ-311' },
-    { name: 'Dr. Rajeshwari V.', email: 'rajeshwari.cse@bmsce.ac.in', code: 'EMP-CSE-013', desig: 'Associate Professor CN', cabin: 'PJ-312' },
-    { name: 'Prof. Vikram Sen', email: 'vikram.cse@bmsce.ac.in', code: 'EMP-CSE-014', desig: 'Assistant Professor OS', cabin: 'PJ-314' },
-    { name: 'Dr. K. M. Rao', email: 'kmrao.math@bmsce.ac.in', code: 'EMP-MATH-005', desig: 'Professor Theory of Computation', cabin: 'PJ-201' },
-    { name: 'Dr. M. Nandhini', email: 'nandhini.cse@bmsce.ac.in', code: 'EMP-CSE-016', desig: 'Associate Professor SE', cabin: 'PJ-315' },
-    { name: 'Prof. S. Malathi', email: 'malathi.cse@bmsce.ac.in', code: 'EMP-CSE-017', desig: 'Associate Professor (Proxy Eligible)', cabin: 'PJ-316' },
+    { name: 'Demo Faculty DAA', email: 'daa.faculty.demo@campusflow.example', code: 'DEMO-FAC-011', desig: 'Professor & Course Coordinator DAA', cabin: 'PJ-310' },
+    { name: 'Demo Faculty DBMS', email: 'dbms.faculty.demo@campusflow.example', code: 'DEMO-FAC-012', desig: 'Assistant Professor DBMS', cabin: 'PJ-311' },
+    { name: 'Demo Faculty CN', email: 'cn.faculty.demo@campusflow.example', code: 'DEMO-FAC-013', desig: 'Associate Professor CN', cabin: 'PJ-312' },
+    { name: 'Demo Faculty OS', email: 'os.faculty.demo@campusflow.example', code: 'DEMO-FAC-014', desig: 'Assistant Professor OS', cabin: 'PJ-314' },
+    { name: 'Demo Faculty TOC', email: 'toc.faculty.demo@campusflow.example', code: 'DEMO-FAC-015', desig: 'Professor Theory of Computation', cabin: 'PJ-201' },
+    { name: 'Demo Faculty SE', email: 'se.faculty.demo@campusflow.example', code: 'DEMO-FAC-016', desig: 'Associate Professor SE', cabin: 'PJ-315' },
+    { name: 'Demo Faculty Proxy', email: 'proxy.faculty.demo@campusflow.example', code: 'DEMO-FAC-017', desig: 'Associate Professor (Proxy Eligible)', cabin: 'PJ-316' },
   ];
 
   const facultyMap: Record<string, string> = {};
@@ -217,8 +249,8 @@ async function main() {
   // Student & CR
   const crUser = await prisma.user.create({
     data: {
-      institutionalEmail: 'aryan.rao@student.bmsce.ac.in',
-      displayName: 'Aryan Rao',
+      institutionalEmail: 'cr.demo@campusflow.example',
+      displayName: 'Demo Class Representative',
       isDemo: true,
       userRoles: {
         create: {
@@ -230,7 +262,7 @@ async function main() {
         create: {
           sectionId: section.id,
           batchId: batch1.id,
-          demoIdentifier: 'DEMO-USN-2024-042',
+          demoIdentifier: 'DEMO-USN-00042',
         },
       },
     },
@@ -238,8 +270,8 @@ async function main() {
 
   const studentUser = await prisma.user.create({
     data: {
-      institutionalEmail: 'arjun@student.bmsce.ac.in',
-      displayName: 'Arjun',
+      institutionalEmail: 'student.demo@campusflow.example',
+      displayName: 'Demo Student',
       isDemo: true,
       userRoles: {
         create: {
@@ -251,7 +283,7 @@ async function main() {
         create: {
           sectionId: section.id,
           batchId: batch1.id,
-          demoIdentifier: 'DEMO-USN-2024-015',
+          demoIdentifier: 'DEMO-USN-00015',
         },
       },
     },
@@ -288,15 +320,15 @@ async function main() {
 
   // 7. Subjects & Offerings
   const subjectsData = [
-    { code: '22CSSPCDAA', name: 'Design & Analysis of Algorithms', type: 'THEORY', dur: 1, lab: false, faculty: 'Dr. A. Ramanathan' },
-    { code: '22CSSPL02', name: 'DAA Lab Practicum', type: 'LAB', dur: 3, lab: true, faculty: 'Dr. A. Ramanathan' },
-    { code: '22CSSPCDBMS', name: 'Database Management Systems', type: 'THEORY', dur: 1, lab: false, faculty: 'Prof. Sneha K.' },
-    { code: '22CSSPL01', name: 'DBMS Practicum', type: 'LAB', dur: 3, lab: true, faculty: 'Prof. Sneha K.' },
-    { code: '22CSSPCCNT', name: 'Computer Networks', type: 'THEORY', dur: 1, lab: false, faculty: 'Dr. Rajeshwari V.' },
-    { code: '22CSSPL03', name: 'Computer Networks Lab', type: 'LAB', dur: 3, lab: true, faculty: 'Dr. Rajeshwari V.' },
-    { code: '22CSSPCOPS', name: 'Operating Systems', type: 'THEORY', dur: 1, lab: false, faculty: 'Prof. Vikram Sen' },
-    { code: '22MASPCTFL', name: 'Theory of Computation', type: 'THEORY', dur: 1, lab: false, faculty: 'Dr. K. M. Rao' },
-    { code: '22CSSPCSE', name: 'Software Engineering & Agile', type: 'THEORY', dur: 1, lab: false, faculty: 'Dr. M. Nandhini' },
+    { code: '22CSSPCDAA', name: 'Design & Analysis of Algorithms', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty DAA' },
+    { code: '22CSSPL02', name: 'DAA Lab Practicum', type: 'LAB', dur: 3, lab: true, faculty: 'Demo Faculty DAA' },
+    { code: '22CSSPCDBMS', name: 'Database Management Systems', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty DBMS' },
+    { code: '22CSSPL01', name: 'DBMS Practicum', type: 'LAB', dur: 3, lab: true, faculty: 'Demo Faculty DBMS' },
+    { code: '22CSSPCCNT', name: 'Computer Networks', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty CN' },
+    { code: '22CSSPL03', name: 'Computer Networks Lab', type: 'LAB', dur: 3, lab: true, faculty: 'Demo Faculty CN' },
+    { code: '22CSSPCOPS', name: 'Operating Systems', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty OS' },
+    { code: '22MASPCTFL', name: 'Theory of Computation', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty TOC' },
+    { code: '22CSSPCSE', name: 'Software Engineering & Agile', type: 'THEORY', dur: 1, lab: false, faculty: 'Demo Faculty SE' },
   ];
 
   const offeringMap: Record<string, string> = {};
@@ -411,31 +443,31 @@ async function main() {
 
   const sessions = [
     // Mon
-    { day: 1, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCDAA', fac: 'Dr. A. Ramanathan', rm: 'PJ-302' },
-    { day: 1, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCDBMS', fac: 'Prof. Sneha K.', rm: 'PJ-302' },
-    { day: 1, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCCNT', fac: 'Dr. Rajeshwari V.', rm: 'PJ-302' },
-    { day: 1, start: '11:45', end: '12:45', p: 4, dur: 1, subj: '22MASPCTFL', fac: 'Dr. K. M. Rao', rm: 'PJ-302' },
+    { day: 1, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCDAA', fac: 'Demo Faculty DAA', rm: 'PJ-302' },
+    { day: 1, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCDBMS', fac: 'Demo Faculty DBMS', rm: 'PJ-302' },
+    { day: 1, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCCNT', fac: 'Demo Faculty CN', rm: 'PJ-302' },
+    { day: 1, start: '11:45', end: '12:45', p: 4, dur: 1, subj: '22MASPCTFL', fac: 'Demo Faculty TOC', rm: 'PJ-302' },
 
     // Tue
-    { day: 2, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCOPS', fac: 'Prof. Vikram Sen', rm: 'PJ-304' },
-    { day: 2, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCCNT', fac: 'Dr. Rajeshwari V.', rm: 'PJ-302' },
-    { day: 2, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCDAA', fac: 'Dr. A. Ramanathan', rm: 'PJ-302' },
-    { day: 2, start: '11:45', end: '12:45', p: 4, dur: 1, subj: '22CSSPCDBMS', fac: 'Prof. Sneha K.', rm: 'PJ-302' },
-    { day: 2, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL01', fac: 'Prof. Sneha K.', rm: 'CS-L2' },
+    { day: 2, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCOPS', fac: 'Demo Faculty OS', rm: 'PJ-304' },
+    { day: 2, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCCNT', fac: 'Demo Faculty CN', rm: 'PJ-302' },
+    { day: 2, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCDAA', fac: 'Demo Faculty DAA', rm: 'PJ-302' },
+    { day: 2, start: '11:45', end: '12:45', p: 4, dur: 1, subj: '22CSSPCDBMS', fac: 'Demo Faculty DBMS', rm: 'PJ-302' },
+    { day: 2, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL01', fac: 'Demo Faculty DBMS', rm: 'CS-L2' },
 
     // Wed
-    { day: 3, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22MASPCTFL', fac: 'Dr. K. M. Rao', rm: 'PJ-302' },
-    { day: 3, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCSE', fac: 'Dr. M. Nandhini', rm: 'PJ-302' },
-    { day: 3, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCDBMS', fac: 'Prof. Sneha K.', rm: 'PJ-302' },
-    { day: 3, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL02', fac: 'Dr. A. Ramanathan', rm: 'CS-L1' },
+    { day: 3, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22MASPCTFL', fac: 'Demo Faculty TOC', rm: 'PJ-302' },
+    { day: 3, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCSE', fac: 'Demo Faculty SE', rm: 'PJ-302' },
+    { day: 3, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCDBMS', fac: 'Demo Faculty DBMS', rm: 'PJ-302' },
+    { day: 3, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL02', fac: 'Demo Faculty DAA', rm: 'CS-L1' },
 
     // Thu
-    { day: 4, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCDAA', fac: 'Dr. A. Ramanathan', rm: 'PJ-302' },
-    { day: 4, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCOPS', fac: 'Prof. Vikram Sen', rm: 'PJ-302' },
-    { day: 4, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCSE', fac: 'Dr. M. Nandhini', rm: 'PJ-302' },
+    { day: 4, start: '08:30', end: '09:30', p: 1, dur: 1, subj: '22CSSPCDAA', fac: 'Demo Faculty DAA', rm: 'PJ-302' },
+    { day: 4, start: '09:30', end: '10:30', p: 2, dur: 1, subj: '22CSSPCOPS', fac: 'Demo Faculty OS', rm: 'PJ-302' },
+    { day: 4, start: '10:45', end: '11:45', p: 3, dur: 1, subj: '22CSSPCSE', fac: 'Demo Faculty SE', rm: 'PJ-302' },
 
     // Fri
-    { day: 5, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL03', fac: 'Dr. Rajeshwari V.', rm: 'CS-L1' },
+    { day: 5, start: '01:45', end: '04:45', p: 5, dur: 3, subj: '22CSSPL03', fac: 'Demo Faculty CN', rm: 'CS-L1' },
   ];
 
   let primaryDaaSessionId = '';
@@ -467,7 +499,7 @@ async function main() {
       data: {
         timetableSessionId: primaryDaaSessionId,
         sessionDate: new Date('2024-10-14T00:00:00Z'),
-        effectiveFacultyId: facultyMap['Dr. A. Ramanathan'],
+        effectiveFacultyId: facultyMap['Demo Faculty DAA'],
         effectiveRoomId: roomMap['PJ-302'],
         effectiveStartTime: '08:30',
         effectiveEndTime: '09:30',
@@ -511,7 +543,7 @@ async function main() {
             {
               senderUserId: hodUser.id,
               messageType: 'ANNOUNCEMENT',
-              body: 'Noted Aryan. The SIH participants are granted an official DAAB attendance exception slip. They may submit their lab records tomorrow during remedial tutorial hour (Period 4). All other students must submit today without exception.',
+              body: 'Noted. The SIH participants are granted an official DAAB attendance exception slip. They may submit their lab records tomorrow during remedial tutorial hour (Period 4). All other students must submit today without exception.',
               isImportant: true,
             },
           ],
@@ -526,7 +558,7 @@ async function main() {
       academicTermId: term.id,
       reportedById: hodUser.id,
       disruptionType: 'FACULTY_UNAVAILABLE',
-      affectedFacultyId: facultyMap['Dr. A. Ramanathan'],
+      affectedFacultyId: facultyMap['Demo Faculty DAA'],
       affectedDate: new Date('2024-10-14T00:00:00Z'),
       startTime: '08:30',
       endTime: '09:30',
@@ -542,7 +574,7 @@ async function main() {
               impactCategory: 'OPTIMAL_REPAIR',
               targetSlot: 'Mon 08:30 - 09:30 AM',
               venue: 'PJ-302 (Reserved)',
-              replacement: 'Prof. S. Malathi (Assoc. Prof, DAA Co-Instructor)',
+              replacement: 'Demo Faculty Proxy (DAA Co-Instructor)',
               facultyAvailable: 'Assigned 15h / 18h limit',
               cohortMovement: 'Zero relocation',
               curriculumSync: 'Module 3 Exam Trackers matched',
@@ -557,7 +589,7 @@ async function main() {
               impactCategory: 'CONTAINED_RESCHEDULED',
               targetSlot: 'Thu 03:45 - 04:45 PM',
               venue: 'PJ-302 (Slot Open)',
-              replacement: 'Dr. A. Ramanathan (Post-recovery)',
+              replacement: 'Demo Faculty DAA (Post-recovery)',
               facultyAvailable: 'Slot available on Thursday',
               cohortMovement: 'Zero relocation',
               curriculumSync: 'Contained within week',
@@ -658,6 +690,10 @@ async function main() {
   });
 
   console.log('✅ Deterministic seed completed successfully!');
+  console.log('   Demo login (persona switcher): POST /api/v1/auth/demo-login { role }');
+  console.log('   Demo password login: POST /api/v1/auth/login { email, password }');
+  console.log('   Emails use @campusflow.example. Shared demo password is documented in CLOUD_ENVIRONMENT_VARIABLES.md (never commit secrets).');
+  void adminUser;
 }
 
 main()

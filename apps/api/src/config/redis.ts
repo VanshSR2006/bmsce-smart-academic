@@ -16,7 +16,11 @@ export function initRedis(): Redis | null {
     return redisClient;
   }
 
-  const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+  const redisUrl = process.env.REDIS_URL?.trim();
+  if (!redisUrl) {
+    console.info('[Redis] REDIS_URL is not set. Using in-memory fallback.');
+    return null;
+  }
 
   try {
     // Secure TLS configuration: Render internal Key Value uses standard redis:// over the private network.
@@ -38,7 +42,7 @@ export function initRedis(): Redis | null {
 
     redisClient.on('connect', () => {
       isConnected = true;
-      console.log(`[Redis] Connected successfully to ${redisUrl}`);
+      console.log('[Redis] Connected successfully.');
     });
 
     redisClient.on('ready', () => {
@@ -59,7 +63,7 @@ export function initRedis(): Redis | null {
 
     // Attempt non-blocking connection
     redisClient.connect().catch(() => {
-      console.info(`[Redis] Redis offline at ${redisUrl}. Using resilient in-memory fallback.`);
+      console.info('[Redis] Redis offline. Using resilient in-memory fallback.');
     });
 
     return redisClient;

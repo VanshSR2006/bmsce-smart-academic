@@ -104,8 +104,8 @@ process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
 
 // Start server
 if (process.env.NODE_ENV !== 'test') {
-  server.listen(config.port, () => {
-    console.log(`🚀 BMSCE Smart Academic API running on http://localhost:${config.port}`);
+  server.listen(config.port, '0.0.0.0', () => {
+    console.log(`🚀 BMSCE Smart Academic API listening on 0.0.0.0:${config.port}`);
     console.log(`📡 Socket.IO server ready on port ${config.port}`);
   });
 }
