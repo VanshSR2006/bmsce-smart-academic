@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Menu, LayoutDashboard, CalendarDays, Bell, Sparkles, GitCompare, AlertOctagon, Wrench, FileSpreadsheet, Users, DoorOpen, Sliders, Search, HelpCircle, ChevronDown, MessageSquare, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
