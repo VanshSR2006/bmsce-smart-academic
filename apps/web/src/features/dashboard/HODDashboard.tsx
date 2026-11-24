@@ -259,7 +259,7 @@ export const HODDashboard: React.FC = () => {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
+              <table className="w-full text-left text-xs border-collapse min-w-[600px]">
                 <thead>
                   <tr className="bg-slate-50 border-y border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     <th className="py-2.5 px-3">Timestamp / Code</th>

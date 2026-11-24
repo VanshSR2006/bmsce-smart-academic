@@ -1,24 +1,8 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import {
-  LayoutDashboard,
-  CalendarDays,
-  Bell,
-  Sparkles,
-  GitCompare,
-  AlertOctagon,
-  Wrench,
-  FileSpreadsheet,
-  Users,
-  DoorOpen,
-  Sliders,
-  Search,
-  HelpCircle,
-  ChevronDown,
-  MessageSquare,
-  CheckCircle2,
-} from 'lucide-react';
+import { Menu, LayoutDashboard, CalendarDays, Bell, Sparkles, GitCompare, AlertOctagon, Wrench, FileSpreadsheet, Users, DoorOpen, Sliders, Search, HelpCircle, ChevronDown, MessageSquare, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { Drawer } from './Drawer';
 
 export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, switchUser } = useAuth();
@@ -26,6 +10,8 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const location = useLocation();
 
   const isStudent = currentUser.role === 'STUDENT' || currentUser.role === 'CR';
+
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
   const navGroups = [
     {
@@ -59,7 +45,15 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6fa] text-slate-800">
       {/* Top Global Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-slate-200/90 shadow-xs px-6 py-2.5 flex items-center justify-between">
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200/90 shadow-xs px-3 md:px-6 py-2.5 flex items-center justify-between gap-2">
+        {/* Hamburger button for mobile */}
+        <button
+          className="lg:hidden p-2"
+          onClick={() => setIsDrawerOpen(true)}
+          aria-label="Open navigation menu"
+        >
+          <Menu className="w-6 h-6" />
+        </button>
         {/* Left: Logo & Title */}
         <div className="flex items-center space-x-3.5">
           <div className="w-10 h-10 rounded-xl bg-[#1e293b] flex items-center justify-center text-white font-black text-xl shadow-xs">
@@ -204,10 +198,60 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
         </div>
       </header>
 
-      {/* Main Body with Sidebar */}
+      {/* Drawer for mobile navigation */}
+      <Drawer isOpen={isDrawerOpen} onClose={() => setIsDrawerOpen(false)}>
+        <div className="space-y-6">
+          {navGroups.map((group, idx) => (
+            <div key={idx}>
+              <div className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mb-2 px-3">
+                {group.title}
+              </div>
+              <div className="space-y-1">
+                {group.items.map((item, i) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={i}
+                      to={item.path}
+                      className={({ isActive }) =>
+                        `flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
+                          isActive
+                            ? 'bg-blue-50 text-blue-700 font-bold shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
+                        }`
+                      }
+                      onClick={() => setIsDrawerOpen(false)}
+                    >
+                      <div className="flex items-center space-x-2.5">
+                        <Icon className="w-4 h-4" />
+                        <span>{item.label}</span>
+                      </div>
+                      {item.badge && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700">
+                          {item.badge}
+                        </span>
+                      )}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {/* Bottom Sidebar Status */}
+          <div className="pt-4 border-t border-slate-100 mt-6 text-left">
+            <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>All 14 Clusters Synced</span>
+            </div>
+            <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+              BMSCE Edge • v4.2.1-prod
+            </div>
+          </div>
+        </div>
+      </Drawer>
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar Navigation */}
-        <aside className="w-64 bg-white border-r border-slate-200/90 flex flex-col justify-between shrink-0 p-4 overflow-y-auto">
+        <aside className="w-64 hidden lg:block bg-white border-r border-slate-200/90 flex flex-col justify-between shrink-0 p-4 overflow-y-auto">
           <div className="space-y-6">
             {navGroups.map((group, idx) => (
               <div key={idx}>
@@ -267,7 +311,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
       </div>
 
       {/* Floating Bottom Status Dock matching design */}
-      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 backdrop-blur-md text-white border border-slate-800 rounded-full shadow-2xl px-6 py-2.5 flex items-center space-x-6 text-xs">
+      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 backdrop-blur-md text-white border border-slate-800 rounded-full shadow-2xl px-3 md:px-6 py-2.5 flex items-center space-x-3 md:space-x-6 text-xs max-w-[calc(100vw-24px)] overflow-hidden">
         {isStudent ? (
           <>
             <div className="flex items-center space-x-2">

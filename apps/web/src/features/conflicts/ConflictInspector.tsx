@@ -314,7 +314,7 @@ export const ConflictInspector: React.FC = () => {
               Cohort Conflict Footprint
             </h3>
             <div className="overflow-x-auto">
-              <table className="text-xs w-full">
+              <table className="text-xs w-full min-w-[400px]">
                 <thead>
                   <tr>
                     <th className="text-slate-400 font-normal pb-2 text-left"></th>

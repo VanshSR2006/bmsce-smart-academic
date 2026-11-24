@@ -340,7 +340,7 @@ export const ExaminationManagement: React.FC = () => {
               <span className="text-xs text-slate-500">{events.length} sessions</span>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm min-w-[640px]">
                 <thead>
                   <tr className="border-b border-slate-100">
                     {['Date', 'Time', 'Course', 'Cohort', 'Venue', 'Invigilator', 'Status'].map((h) => (
