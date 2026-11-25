@@ -1,133 +1,88 @@
 import { Router, Request, Response } from 'express';
+import type { ConflictInspectorSummary } from '@bmsce/contracts';
 
 export const conflictsRouter = Router();
 
 conflictsRouter.get('/summary', async (req: Request, res: Response) => {
-  return res.json({
-    data: {
-      title: 'Timetable Conflict Inspector',
-      subtitle: 'Identify, analyze, and resolve institutional scheduling constraint violations for the BMSCE Academic Autonomous Cluster before DAAB ratification.',
-      academicCycle: 'AY 2024–25 (Odd Sem)',
-      scope: 'CSE (4 Sems, 16 Sections)',
-      activeStagingPlan: 'Draft Master v1.2.REV',
-      auditTimestamp: 'Today, 09:42 AM',
-      gatekeeperStatus: {
-        hardBlockers: 3,
-        softWarnings: 5,
-        status: 'PUBLICATION_BLOCKED',
-      },
-      stats: {
-        totalHard: 3,
-        facultyClashes: 1,
-        venueCollisions: 1,
-        nepCompliance: 1,
-        batchIntegrity: 0,
-        softHeuristics: 5,
-      },
-      incidents: [
-        {
-          id: 'ICONT-1041',
-          resourceEntity: 'Dr. A. Ramanathan',
-          role: 'Professor • Dept CSE',
-          natureOfConflict: 'Direct Double-Booking (22CSSPCDAA (5-B) vs 22CS7PECS (7-A))',
-          assignedSlot: 'Mon Period 2 (09:30–10:30 AM)',
-          severity: 'HARD',
-          rootCause: 'Dr. A. Ramanathan has been scheduled into two distinct venues simultaneously on Monday Period 2 (09:30–10:30 AM). This occurs because the 7th Semester elective cohort merged manually during Section A finalization without releasing the core assignment in 5th Semester CSE-B.',
-          simultaneousAllocations: [
-            { session: 'SESSION A (CORE)', cohort: '5th Sem CSE-B', code: '22CSSPCDAA', title: 'Design & Analysis of Algo', room: 'Room PJ-302' },
-            { session: 'SESSION B (ELECTIVE)', cohort: '7th Sem CSE-A', code: '22CS7PECS', title: 'Cloud Security & Audit', room: 'Seminar Hall 2' },
-          ],
-          policyAnchor: 'BMSCE Autonomous Clause 4.1 & VTU Section 15.2 (Zero Faculty Concurrency Violation).',
-          recommendedResolutions: [
-            {
-              id: 'res-1',
-              title: 'Proxy Assign to Prof. S. Malathi',
-              description: 'Reassign Monday Period 2 22CSSPCDAA to Prof. S. Malathi. She has 0 concurrent lectures and her weekly workload remains compliant at 16.0h / 18.0h.',
-              impactText: 'Diff impact: 1 slot modified',
-              isRecommended: true,
-            },
-            {
-              id: 'res-2',
-              title: 'Relocate 22CS7PECS to Tuesday',
-              description: 'Shift Cloud Security to Tuesday Period 4 (11:45–12:45 PM). Seminar Hall 2 is free. Note: Dr. Ramanathan will have 2 consecutive hours on Tuesday.',
-              impactText: '+1 Soft Warning (Fatigue)',
-              isRecommended: false,
-            },
-          ],
-        },
-        {
-          id: 'ICONT-1042',
-          resourceEntity: 'Systems Lab 1 (CS-L1)',
-          role: 'Cadence Server Cluster • 40 Seats',
-          natureOfConflict: 'Room Dual Allocation: 22CSSL01 (5 B1) vs 22CS3L02 (3 B2)',
-          assignedSlot: 'Wed P6–P7 (02:45–04:45 PM)',
-          severity: 'HARD',
-          rootCause: 'Concurrent allocation of 40-seat Systems Lab 1 to two distinct practical batches simultaneously.',
-        },
-        {
-          id: 'ICONT-1043',
-          resourceEntity: 'NEP Contiguity Breach',
-          role: '5th Sem CSE-B (Batch B2)',
-          natureOfConflict: '2-Hour Practical Block: 22CSSL01 Networks Lab requires 3h contiguous',
-          assignedSlot: 'Fri Periods 5 & 6 (01:45–03:45 PM)',
-          severity: 'HARD',
-          rootCause: 'Practical laboratory allocated only 2 discrete periods instead of mandatory 3-hour NEP block.',
-        },
-        {
-          id: 'ICONT-1044',
-          resourceEntity: '5th Sem CSE-B',
-          role: 'Student Cognitive Load',
-          natureOfConflict: '4 Consecutive Theory Slots: Exceeds recommended 2h continuous lecture cap',
-          assignedSlot: 'Thu Periods 1–4 (08:30–12:45 PM)',
-          severity: 'SOFT',
-        },
-        {
-          id: 'ICONT-1045',
-          resourceEntity: 'Dr. P. Jayashree',
-          role: 'Associate Professor',
-          natureOfConflict: 'Workload Cap +1.5h: 17.5 hrs/wk (AICTE standard 16.0 hrs/wk)',
-          assignedSlot: 'Cumulative Weekly Total',
-          severity: 'SOFT',
-        },
-      ],
-      conflictMatrix: {
-        cohort: '5th Semester – Section B',
-        days: [
-          {
-            day: 'MON',
-            p1: { code: '22CSSPCDAA', status: 'OK' },
-            p2: { code: '22CSSPCDBMS', conflict: 'FACULTY CLASH: 22CSSPCDAA', status: 'HARD_CLASH' },
-            p3: { code: '22MASPCTFL', status: 'OK' },
-            p4: { code: 'Library/TUT', status: 'OK' },
-            p5to7: { code: '22CSSL02 Networks Lab', status: 'OK' },
-          },
-          {
-            day: 'TUE',
-            p1: { code: '22CSSPCOPS', status: 'OK' },
-            p2: { code: '22CSSPCDAA', status: 'OK' },
-            p3: { code: '22CSSPCOPS', status: 'OK' },
-            p4: { code: '22CSSPCDBMS', status: 'OK' },
-            p5to7: { code: 'AEC Activity', status: 'OK' },
-          },
-          {
-            day: 'WED',
-            p1: { code: '22MASPCTFL', status: 'OK' },
-            p2: { code: '22CSSPCSE', status: 'OK' },
-            p3: { code: '22CSSPCDBMS', status: 'OK' },
-            p4: { code: 'Open Elec', status: 'OK' },
-            p5to7: { code: 'VENUE CLASH: CS-Lab 1', status: 'VENUE_CLASH' },
-          },
+  const data: ConflictInspectorSummary = {
+    title: 'Conflict Inspector',
+    subtitle: 'Synthetic constraint violation analysis — Draft Master v1.2.REV (AY 2024–25 Odd Sem)',
+    academicCycle: 'AY 2024–25 (Odd Sem)',
+    activeStagingPlan: 'Draft Master v1.2.REV',
+    isDemoData: true,
+    totalHardConflicts: 3,
+    totalSoftConflicts: 2,
+    facultyClashes: 1,
+    venueCollisions: 1,
+    windowViolations: 1,
+    incidents: [
+      {
+        id: 'ICONT-1041',
+        severity: 'HARD',
+        type: 'FACULTY_CLASH',
+        resourceEntity: 'Dr. A. Ramanathan',
+        description: 'Direct Double-Booking: 22CSSPCDAA (5th Sem CSE-B) vs 22CS7PECS (7th Sem CSE-A).',
+        affectedEntities: [
+          '5th Sem CSE-B • 22CSSPCDAA (Design & Analysis of Algo) • Room PJ-302',
+          '7th Sem CSE-A • 22CS7PECS (Cloud Security & Audit) • Seminar Hall 2',
         ],
+        slot: 'Mon Period 2 (09:30–10:30 AM)',
+        constraintRef: 'HC-01: Zero Faculty Concurrency Violation',
+        rootCause:
+          '7th Semester elective cohort merged during Section A finalization without releasing the core assignment in 5th Semester CSE-B.',
       },
-      constraintHealth: {
-        passed: 17,
-        total: 20,
-        pct: 85.0,
-        status: 'BLOCKED',
-        weeklyAuditedHours: 384,
-        softOptimalityMargin: 92.4,
+      {
+        id: 'ICONT-1042',
+        severity: 'HARD',
+        type: 'VENUE_COLLISION',
+        resourceEntity: 'Systems Lab 1 (CS-L1)',
+        description: 'Room Dual Allocation: 22CSSL01 (5 B1) vs 22CS3L02 (3 B2).',
+        affectedEntities: [
+          '5th Sem Batch B1 • 22CSSL01 • Systems Lab 1 (CS-L1)',
+          '3rd Sem Batch B2 • 22CS3L02 • Systems Lab 1 (CS-L1)',
+        ],
+        slot: 'Wed P6–P7 (02:45–04:45 PM)',
+        constraintRef: 'HC-02: Room Single-Occupancy',
+        rootCause: 'Concurrent allocation of 40-seat Systems Lab 1 to two distinct practical batches.',
       },
-    },
-  });
-});
+      {
+        id: 'ICONT-1043',
+        severity: 'HARD',
+        type: 'LAB_SPLIT',
+        resourceEntity: '5th Sem CSE-B (Batch B2)',
+        description: '2-Hour Practical Block: 22CSSL01 Networks Lab requires 3h contiguous.',
+        affectedEntities: ['5th Sem CSE-B Batch B2 • 22CSSL01 Networks Lab'],
+        slot: 'Fri Periods 5 & 6 (01:45–03:45 PM)',
+        constraintRef: 'HC-06 / NEP 2022 Clause 4.3: Lab Contiguity',
+        rootCause: 'Practical laboratory allocated only 2 discrete periods instead of mandatory 3-hour NEP block.',
+      },
+      {
+        id: 'ICONT-1044',
+        severity: 'SOFT',
+        type: 'WINDOW_VIOLATION',
+        resourceEntity: '5th Sem CSE-B',
+        description: '4 Consecutive Theory Slots: Exceeds recommended 2h continuous lecture cap.',
+        affectedEntities: ['5th Sem CSE-B • Thu Periods 1–4'],
+        slot: 'Thu Periods 1–4 (08:30–12:45 PM)',
+        constraintRef: 'SC-02: Cognitive Load Cap',
+      },
+      {
+        id: 'ICONT-1045',
+        severity: 'SOFT',
+        type: 'WINDOW_VIOLATION',
+        resourceEntity: 'Dr. P. Jayashree',
+        description: 'Workload Cap +1.5h: 17.5 hrs/wk (AICTE standard 16.0 hrs/wk).',
+        affectedEntities: ['Dr. P. Jayashree — Cumulative Weekly Total (17.5h)'],
+        slot: 'Cumulative Weekly Total',
+        constraintRef: 'SC-04: Faculty Load Balancing',
+      },
+    ],
+    recommendations: [
+      'Demo suggestion: Proxy-assign Mon Period 2 (22CSSPCDAA) to Prof. S. Malathi (0 concurrent lectures, 16.0h / 18.0h weekly load).',
+      'Demo suggestion: Relocate 3rd Sem Batch B2 practical (22CS3L02) from CS-L1 to Software Lab 2 (CS-L2) on Wed P6–P7.',
+      'Demo suggestion: Extend Fri Networks Lab (22CSSL01) to 3 contiguous periods (P5–P7) for NEP 2022 compliance.',
+    ],
+  };
 
+  return res.json({ data });
+});

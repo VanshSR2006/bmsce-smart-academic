@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { getApiUrl } from '../../lib/api';
+import { useApiQuery } from '../../components/common/useApiQuery';
+import { QueryStateCard } from '../../components/common/QueryStateCard';
 import {
   DoorOpen,
   MapPin,
@@ -51,33 +52,50 @@ interface RoomData {
 }
 
 export const RoomManagement: React.FC = () => {
-  const [data, setData] = useState<RoomData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, refetch } = useApiQuery<RoomData>('/api/v1/rooms/overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
   const [selectedRoom, setSelectedRoom] = useState<RoomItem | null>(null);
 
   useEffect(() => {
-    fetch(getApiUrl('/api/v1/rooms/overview'))
-      .then((res) => res.json())
-      .then((res) => {
-        if (res.data) {
-          setData(res.data);
-          if (res.data.rooms?.length) setSelectedRoom(res.data.rooms[0]);
-        }
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error('Failed to load room management:', err);
-        setLoading(false);
-      });
-  }, []);
+    if (data?.rooms?.length) {
+      setSelectedRoom((prev) =>
+        prev && data.rooms.some((r) => r.roomId === prev.roomId) ? prev : data.rooms[0]
+      );
+    } else {
+      setSelectedRoom(null);
+    }
+  }, [data]);
 
-  if (loading || !data) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full"></div>
-      </div>
+      <QueryStateCard
+        mode="loading"
+        message="Loading smart labs and rooms..."
+        spinnerColorClass="border-indigo-600"
+      />
+    );
+  }
+
+  if (error) {
+    return (
+      <QueryStateCard
+        mode="error"
+        title="Failed to Load Room Management"
+        message={error}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  if (!data || !data.metrics || !Array.isArray(data.rooms)) {
+    return (
+      <QueryStateCard
+        mode="empty"
+        title="No Room Inventory Data"
+        message="No classroom or laboratory records were returned."
+        onRetry={refetch}
+      />
     );
   }
 

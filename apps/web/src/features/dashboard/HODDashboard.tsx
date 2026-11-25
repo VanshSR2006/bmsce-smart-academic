@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { getApiUrl } from '../../lib/api';
+import React, { useState } from 'react';
+import { useApiQuery } from '../../components/common/useApiQuery';
+import { QueryStateCard } from '../../components/common/QueryStateCard';
 import { NavLink } from 'react-router-dom';
 import {
   Rocket,
@@ -17,28 +18,32 @@ import {
 } from 'lucide-react';
 
 export const HODDashboard: React.FC = () => {
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, refetch } = useApiQuery<any>('/api/v1/hod/dashboard-overview');
   const [approvedProposal, setApprovedProposal] = useState(false);
 
-  useEffect(() => {
-    fetch(getApiUrl('/api/v1/hod/dashboard-overview'))
-      .then((res) => res.json())
-      .then((res) => {
-        setData(res.data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error('Failed to load HOD dashboard:', err);
-        setLoading(false);
-      });
-  }, []);
+  if (loading) {
+    return <QueryStateCard mode="loading" message="Loading HOD operations dashboard..." />;
+  }
 
-  if (loading || !data) {
+  if (error) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
-      </div>
+      <QueryStateCard
+        mode="error"
+        title="Failed to Load HOD Dashboard"
+        message={error}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  if (!data || !data.metrics) {
+    return (
+      <QueryStateCard
+        mode="empty"
+        title="No Dashboard Data Available"
+        message="No department overview metrics were returned."
+        onRetry={refetch}
+      />
     );
   }
 

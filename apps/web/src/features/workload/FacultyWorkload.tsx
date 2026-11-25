@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { getApiUrl } from '../../lib/api';
+import { useApiQuery } from '../../components/common/useApiQuery';
+import { QueryStateCard } from '../../components/common/QueryStateCard';
 import {
   Users,
   Clock,
@@ -54,33 +56,50 @@ interface WorkloadData {
 }
 
 export const FacultyWorkload: React.FC = () => {
-  const [data, setData] = useState<WorkloadData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, refetch } = useApiQuery<WorkloadData>('/api/v1/workload/overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [selectedFaculty, setSelectedFaculty] = useState<FacultyItem | null>(null);
 
   useEffect(() => {
-    fetch(getApiUrl('/api/v1/workload/overview'))
-      .then((res) => res.json())
-      .then((res) => {
-        if (res.data) {
-          setData(res.data);
-          if (res.data.faculty?.length) setSelectedFaculty(res.data.faculty[0]);
-        }
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error('Failed to fetch faculty workload:', err);
-        setLoading(false);
-      });
-  }, []);
+    if (data?.faculty?.length) {
+      setSelectedFaculty((prev) =>
+        prev && data.faculty.some((f) => f.facultyId === prev.facultyId) ? prev : data.faculty[0]
+      );
+    } else {
+      setSelectedFaculty(null);
+    }
+  }, [data]);
 
-  if (loading || !data) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full"></div>
-      </div>
+      <QueryStateCard
+        mode="loading"
+        message="Loading faculty workload distribution..."
+        spinnerColorClass="border-indigo-600"
+      />
+    );
+  }
+
+  if (error) {
+    return (
+      <QueryStateCard
+        mode="error"
+        title="Failed to Load Faculty Workload"
+        message={error}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  if (!data || !data.metrics || !Array.isArray(data.faculty)) {
+    return (
+      <QueryStateCard
+        mode="empty"
+        title="No Faculty Workload Data"
+        message="No faculty workload records were returned."
+        onRetry={refetch}
+      />
     );
   }
 

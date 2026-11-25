@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { getApiUrl } from '../../lib/api';
+import React from 'react';
+import { useApiQuery } from '../../components/common/useApiQuery';
+import { QueryStateCard } from '../../components/common/QueryStateCard';
 import {
   Clock,
   Calendar,
@@ -15,27 +16,31 @@ import {
 import { NavLink } from 'react-router-dom';
 
 export const StudentDashboard: React.FC = () => {
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, refetch } = useApiQuery<any>('/api/v1/students/me/dashboard');
 
-  useEffect(() => {
-    fetch(getApiUrl('/api/v1/students/me/dashboard'))
-      .then((res) => res.json())
-      .then((res) => {
-        setData(res.data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error('Failed to load student dashboard:', err);
-        setLoading(false);
-      });
-  }, []);
+  if (loading) {
+    return <QueryStateCard mode="loading" message="Loading student dashboard..." />;
+  }
 
-  if (loading || !data) {
+  if (error) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
-      </div>
+      <QueryStateCard
+        mode="error"
+        title="Failed to Load Student Dashboard"
+        message={error}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  if (!data || !data.student || !data.summaryCards) {
+    return (
+      <QueryStateCard
+        mode="empty"
+        title="No Student Dashboard Data"
+        message="No schedule summary was returned for this student profile."
+        onRetry={refetch}
+      />
     );
   }
 

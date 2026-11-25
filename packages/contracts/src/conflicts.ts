@@ -43,3 +43,33 @@ export const ConflictAuditSummarySchema = z.object({
 });
 export type ConflictAuditSummary = z.infer<typeof ConflictAuditSummarySchema>;
 
+// Canonical /api/v1/conflicts/summary contract (TASK-101B)
+export const ConflictInspectorIncidentSchema = z.object({
+  id: z.string(),
+  severity: z.enum(['HARD', 'SOFT', 'WARNING']),
+  type: z.string().default('CONSTRAINT_VIOLATION'),
+  description: z.string(),
+  affectedEntities: z.array(z.string()).default([]),
+  slot: z.string().optional(),
+  constraintRef: z.string().optional(),
+  resourceEntity: z.string().optional(),
+  rootCause: z.string().optional(),
+});
+export type ConflictInspectorIncident = z.infer<typeof ConflictInspectorIncidentSchema>;
+
+export const ConflictInspectorSummarySchema = z.object({
+  title: z.string().optional(),
+  subtitle: z.string().optional(),
+  academicCycle: z.string().optional(),
+  activeStagingPlan: z.string().optional(),
+  isDemoData: z.boolean().optional(),
+  totalHardConflicts: z.number().default(0),
+  totalSoftConflicts: z.number().default(0),
+  facultyClashes: z.number().default(0),
+  venueCollisions: z.number().default(0),
+  windowViolations: z.number().default(0),
+  incidents: z.array(ConflictInspectorIncidentSchema).default([]),
+  recommendations: z.array(z.string()).default([]),
+});
+export type ConflictInspectorSummary = z.infer<typeof ConflictInspectorSummarySchema>;
+

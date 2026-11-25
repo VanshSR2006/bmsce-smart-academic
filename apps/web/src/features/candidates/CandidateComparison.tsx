@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { getApiUrl } from '../../lib/api';
+import React, { useState } from 'react';
+import { useApiQuery } from '../../components/common/useApiQuery';
+import { QueryStateCard } from '../../components/common/QueryStateCard';
 import {
   GitCompare,
   CheckCircle2,
@@ -12,22 +13,33 @@ import {
 } from 'lucide-react';
 
 export const CandidateComparison: React.FC = () => {
-  const [data, setData] = useState<any>(null);
+  const { data, loading, error, refetch } = useApiQuery<any>('/api/v1/solver/candidates/compare');
   const [selectedCandidate, setSelectedCandidate] = useState<string>('cand-a');
   const [published, setPublished] = useState(false);
 
-  useEffect(() => {
-    fetch(getApiUrl('/api/v1/solver/candidates/compare'))
-      .then((res) => res.json())
-      .then((res) => setData(res.data))
-      .catch((err) => console.error(err));
-  }, []);
+  if (loading) {
+    return <QueryStateCard mode="loading" message="Loading candidate comparison..." />;
+  }
 
-  if (!data) {
+  if (error) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
-      </div>
+      <QueryStateCard
+        mode="error"
+        title="Failed to Load Candidate Comparison"
+        message={error}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  if (!data || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+    return (
+      <QueryStateCard
+        mode="empty"
+        title="No Candidates Available"
+        message="No timetable candidates were returned for comparison."
+        onRetry={refetch}
+      />
     );
   }
 
