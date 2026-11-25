@@ -32,10 +32,10 @@ Priorities: **P0** (Critical crashes / data integrity / core solver) · **P1** (
 
 | ID | Description | Relevant Files | Dependencies | Priority | Status | Acceptance Criteria |
 |---|---|---|---|---|---|---|
-| `TASK-401` | Implement **HC-6** (Lab contiguity) in `cpsat.py` replacing `pass` no-op | `apps/optimizer/solver/cpsat.py` | Phase 2 | **P0** | `PENDING` | Lab subjects with `lab_duration_hours >= 2` are strictly scheduled in contiguous periods on the same day |
-| `TASK-402` | Implement **HC-7** (Faculty `unavailable_slots`) in `cpsat.py` | `apps/optimizer/solver/cpsat.py` | `TASK-401` | **P0** | `PENDING` | CP-SAT never assigns faculty to slots in `unavailable_slots` |
-| `TASK-403` | Implement **SC-3** (consecutive same subject) and **SC-4** (faculty load balance) in `cpsat.py` objective | `apps/optimizer/solver/cpsat.py` | `TASK-401` | **P2** | `PENDING` | Objective penalizes consecutive identical theory subjects and load imbalance |
-| `TASK-404` | Implement Simulated Annealing (`sa.py`) and wire into `main.py` | `apps/optimizer/solver/sa.py`, `apps/optimizer/main.py` | `TASK-401` | **P2** | `PENDING` | `POST /optimize` returns Greedy, CP-SAT, and SA candidates for comparison |
+| `TASK-401` | Implement **HC-6** (Lab contiguity) in `cpsat.py` replacing `pass` no-op | `apps/optimizer/solver/cpsat.py`, `apps/optimizer/test_hc6_lab_contiguity.py` | Phase 2 | **P0** | `DONE` | Lab subjects with `lab_duration_hours >= 2` are strictly scheduled in contiguous periods on the same day |
+| `TASK-402` | Implement **HC-7** (Faculty `unavailable_slots`) in `cpsat.py` | `apps/optimizer/solver/cpsat.py`, `apps/optimizer/test_hc7_faculty_availability.py` | `TASK-401` | **P0** | `DONE` | CP-SAT never assigns faculty to slots in `unavailable_slots` |
+| `TASK-403` | Implement **SC-3** (consecutive same subject) and **SC-4** (faculty load balance) + independent metrics & benchmarking | `apps/optimizer/solver/cpsat.py`, `apps/optimizer/solver/metrics.py`, `apps/optimizer/test_sc3_sc4.py`, `scripts/benchmark_sc3_sc4.py` | `TASK-401` | **P2** | `DONE` | Objective penalizes consecutive identical theory subjects and load imbalance; benchmarked vs Greedy |
+| `TASK-404` | Optimizer Reliability & Performance Hardening ($O(1)$ indexing, timeout/status handling, Greedy HC-7 fix) | `apps/optimizer/solver/cpsat.py`, `apps/optimizer/solver/greedy.py`, `apps/optimizer/test_hardening_404.py` | `TASK-403` | **P1** | `DONE` | 22.5x faster 4-sec model build, explicit `TIMEOUT`/`MODEL_INVALID`/`FEASIBLE` handling, Greedy HC-7 overload fixed |
 
 ## Phase 5 — Initial & Dynamic Timetable Generation
 

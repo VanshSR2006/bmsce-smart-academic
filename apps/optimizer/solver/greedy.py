@@ -43,6 +43,17 @@ def run_greedy(req: OptimizeRequest) -> TimetableCandidate:
     room_busy: Dict[str, Set[SlotKey]] = {r.id: set() for r in req.rooms}
     section_busy: Dict[str, Set[SlotKey]] = {s.id: set() for s in req.sections}
     faculty_weekly_hours: Dict[str, int] = {f.id: 0 for f in req.faculty}
+    faculty_unavailable: Dict[str, Set[SlotKey]] = {}
+    for f in req.faculty:
+        u_set: Set[SlotKey] = set()
+        for s in f.unavailable_slots:
+            if "-" in s:
+                parts = s.split("-", 1)
+                try:
+                    u_set.add((parts[0].strip().upper(), int(parts[1].strip())))
+                except ValueError:
+                    pass
+        faculty_unavailable[f.id] = u_set
 
     assigned: List[AssignedSlot] = []
     violations: List[ConstraintViolation] = []
@@ -108,13 +119,11 @@ def run_greedy(req: OptimizeRequest) -> TimetableCandidate:
                         faculty_idx += 1
 
                         fac = faculty_map[fid]
-                        # Check faculty availability
-                        fac_unavailable = set(
-                            (s.split("-")[0], int(s.split("-")[1]))
-                            for s in fac.unavailable_slots
-                            if "-" in s and len(s.split("-")) == 2
-                        )
-                        if any(sl in faculty_busy[fid] or sl in fac_unavailable for sl in block_slots):
+                        fac_unavail = faculty_unavailable[fid]
+                        if any(
+                            sl in faculty_busy[fid] or (sl[0].upper(), sl[1]) in fac_unavail
+                            for sl in block_slots
+                        ):
                             continue
                         if faculty_weekly_hours[fid] + block_size > fac.max_weekly_hours:
                             continue
@@ -123,9 +132,13 @@ def run_greedy(req: OptimizeRequest) -> TimetableCandidate:
                         break
 
                     if not assigned_fac:
-                        # No faculty available → try overload (soft violation)
+                        # No faculty within cap -> try overload only if faculty is available (HC-7)
                         for fid in eligible_faculty:
-                            if not any(sl in faculty_busy[fid] for sl in block_slots):
+                            fac_unavail = faculty_unavailable[fid]
+                            if not any(
+                                sl in faculty_busy[fid] or (sl[0].upper(), sl[1]) in fac_unavail
+                                for sl in block_slots
+                            ):
                                 assigned_fac = fid
                                 soft_penalty += 10
                                 violations.append(ConstraintViolation(

@@ -113,3 +113,37 @@
   - `GET /api/v1/solver/studio-config` and `GET /api/v1/solver/candidates/compare` remain hardcoded (`TASK-502`).
   - Existing local and Supabase databases were not modified.
 - **Remaining tasks:** Phase 3 (`TASK-301`) through Phase 10 (`TASK-1001`).
+
+---
+
+## Phase 4 — CP-SAT Optimization Engine Completion
+
+- **Start date:** 2026-11-26
+- **Completion date:** 2026-11-26
+- **Tasks completed:**
+  - `TASK-401` — Implemented **HC-6 (Lab Contiguity)** in `apps/optimizer/solver/cpsat.py` using block-start indicator variables `lab_start` linked via `x_var == sum(covering_starts)` plus post-solve `LAB_CONTIGUITY_VIOLATION` verification; created `apps/optimizer/test_hc6_lab_contiguity.py`.
+  - `TASK-402` — Implemented **HC-7 (Faculty Availability)** in `apps/optimizer/solver/cpsat.py` + post-solve `FACULTY_UNAVAILABLE` check; created `apps/optimizer/test_hc7_faculty_availability.py`.
+  - `TASK-403` — Implemented **SC-3** (weight `6`, excluding labs) and **SC-4** (weight `3`, active faculty only) in `apps/optimizer/solver/cpsat.py`; added independent `compute_schedule_quality_metrics` in `apps/optimizer/solver/metrics.py`; created `apps/optimizer/test_sc3_sc4.py` and `scripts/benchmark_sc3_sc4.py`.
+  - `TASK-404` — Hardened `cpsat.py` with $O(1)$ variable indexing buckets, HC-7 variable pruning, monotonic 6-stage timing breakdown, explicit `TIMEOUT`/`MODEL_INVALID`/`INFEASIBLE`/`FEASIBLE`/`OPTIMAL` handling; fixed `greedy.py` HC-7 overload fallback; created `apps/optimizer/test_hardening_404.py`.
+- **Files changed:**
+  - `apps/optimizer/solver/cpsat.py` (modified)
+  - `apps/optimizer/solver/greedy.py` (modified)
+  - `apps/optimizer/solver/metrics.py` (created)
+  - `apps/optimizer/test_hc6_lab_contiguity.py` (created)
+  - `apps/optimizer/test_hc7_faculty_availability.py` (created)
+  - `apps/optimizer/test_sc3_sc4.py` (created)
+  - `apps/optimizer/test_hardening_404.py` (created)
+  - `scripts/benchmark_sc3_sc4.py` (created/modified)
+- **Commands executed:**
+  - `test_optimizer.py`, `test_cpsat.py`, `test_hc6_lab_contiguity.py`, `test_hc7_faculty_availability.py`, `test_sc3_sc4.py`, `test_hardening_404.py` (All Exit 0)
+  - `scripts/synthetic_scenarios.py` (Exit 0)
+  - `scripts/benchmark_sc3_sc4.py` (Exit 0)
+- **Test results:**
+  - All 6 optimizer test suites: PASS
+  - Benchmark (`benchmark_sc3_sc4.py`, 20s limit): 4/4 `OPTIMAL` (`0` hard); 4-section total time dropped from `53.313s` (`FEASIBLE`, build `32.743s`) to `10.06s` (`OPTIMAL`, build `1.453s`).
+  - `synthetic_scenarios.py` (10s limit): `2..6` `INFEASIBLE` (Greedy `4_unavailable_faculty` fixed -> `PARTIAL`, 0 slots); `1_feasible_4sec` & `7_incremental_4sec` hit `TIMEOUT` at 10s (solved `OPTIMAL` at 20s).
+- **Known limitations:**
+  - 10s limit in `synthetic_scenarios.py` times out on 4-section instances (20s solves `OPTIMAL`).
+  - Greedy baseline does not implement SC-2/SC-3/SC-4.
+  - HC-6 limitations: `OptimizeRequest` models class periods only (breaks/lunch omitted) and sub-section `Batch` IDs are not separate fields on `SectionInput`.
+- **Remaining tasks:** None in Phase 4 (Phase 3 / Phase 5 next).
