@@ -17,7 +17,9 @@ Priorities: **P0** (Critical crashes / data integrity / core solver) · **P1** (
 
 | ID | Description | Relevant Files | Dependencies | Priority | Status | Acceptance Criteria |
 |---|---|---|---|---|---|---|
-| `TASK-201` | Expand `prisma/seed.ts` with multi-section CSE dataset (sections, labs, faculty availability, disruptions, exam cycles, chat spaces) | `prisma/seed.ts` | Phase 1 | **P1** | `PENDING` | Deterministic seed populates realistic multi-section + lab dataset in local DB |
+| `TASK-201` | Data Architecture Readiness, deterministic 4-section synthetic CSE seed, 7 controlled scenarios, and import pipeline design | `scripts/seed_synthetic_cse.ts`, `scripts/synthetic_scenarios.py`, `docs/development/DATA_ARCHITECTURE_READINESS.md` | Phase 1 | **P1** | `DONE` | Schema audited, idempotent synthetic seed verified on disposable DB, 7 optimizer scenarios executed, import strategy documented |
+| `TASK-202A` | Remove hardcoded `'CSE-5B'` dependency from timetable retrieval (`timetables.router.ts`) | `apps/api/src/modules/timetables/timetables.router.ts` | `TASK-201` | **P1** | `DONE` | Resolves section by ID/code, returns 404 for unknown, empty state for no timetable, derives load/directory from DB |
+| `TASK-202B` | Decouple `solver.router.ts` from all-to-all subject/faculty demo assumptions | `apps/api/src/modules/solver/solver.router.ts` | `TASK-202A` | **P1** | `DONE` | Solver payload uses `SubjectOffering`, `FacultyAssignment`, `FacultyAvailability`, `FacultyWorkloadRule`, `BellSchedule`, `TimePeriod`, `Room` |
 
 ## Phase 3 — Academic Structure Management
 

@@ -77,3 +77,39 @@
   - `GET /api/v1/repairs/active` and `GET /api/v1/conflicts/summary` still return hardcoded synthetic demonstration data (`isDemoData: true`); DB-backed conflict detection (`TASK-601`) and CP-SAT repair (`TASK-602`) are deferred to Phase 6.
   - `POST /api/v1/repairs/authorize` records an `auditLog` entry only (`appliedToTimetable: false`) and skips role check if `req.user` is undefined (`TASK-802` handles strict `requireAuth`).
 - **Remaining tasks:** Phase 2 (`TASK-201`) through Phase 10 (`TASK-1001`).
+
+---
+
+## Phase 2 — Data Foundation & Synthetic Dataset
+
+- **Start date:** 2026-11-26
+- **Completion date:** 2026-11-26
+- **Tasks completed:**
+  - `TASK-201` — Audited 50-model Prisma schema (confirmed capable of real BMSCE data without schema edits), created deterministic idempotent `scripts/seed_synthetic_cse.ts` (4 sections, 12 batches, 7 subjects, 28 offerings, 8 faculty, 8 rooms), created & executed 7 controlled optimizer scenarios in `scripts/synthetic_scenarios.py`, verified idempotency on a disposable SQLite DB, and documented the real-data import pipeline in `docs/development/DATA_ARCHITECTURE_READINESS.md`.
+  - `TASK-202A` — Removed hardcoded `'CSE-5B'` dependency from `apps/api/src/modules/timetables/timetables.router.ts`; implemented `resolveRequestedSection` (UUID, `sectionCode`, or `'demo'` first-active alias), section-scoped `TimetableVersion.sessions` & `BellSchedule` queries, `404 SECTION_NOT_FOUND` for unknown sections, valid empty timetable state (`hasTimetable: false`), and dynamic `loadBreakdown`, `facultyDirectory`, `primaryRoom`, `batches`, and `governance` derivation.
+  - `TASK-202B` — Replaced all-to-all subject/faculty mapping and hardcoded demo fallback in `apps/api/src/modules/solver/solver.router.ts` (`POST /api/v1/solver/run`) with relationship-driven `buildOptimizerPayloadFromDb` using `AcademicTerm`, `Section`, `SubjectOffering`, `FacultyAssignment`, `FacultyAvailability`, `FacultyWorkloadRule`, `Room`, `BellSchedule`, and `TimePeriod`; persisted `FAILED`/`UNAVAILABLE` run status (503) when optimizer is unreachable.
+- **Files changed:**
+  - `scripts/seed_synthetic_cse.ts` (created)
+  - `scripts/synthetic_scenarios.py` (created)
+  - `docs/development/DATA_ARCHITECTURE_READINESS.md` (created)
+  - `apps/api/src/modules/timetables/timetables.router.ts` (modified)
+  - `apps/api/src/modules/solver/solver.router.ts` (modified)
+- **Commands executed:**
+  - `npx prisma validate` (Exit 0)
+  - `.\apps\optimizer\.venv\Scripts\python.exe scripts\synthetic_scenarios.py` (Exit 0)
+  - Disposable SQLite `prisma db push` + 2x `runSyntheticCseSeed` (Exit 0; identical counts)
+  - Disposable SQLite + Express HTTP integration test `test_timetables_202a.ts` (Exit 0; `ALL_202A_ASSERTIONS_PASSED`)
+  - Disposable SQLite + Python optimizer end-to-end test `test_solver_202b.ts` (Exit 0; `ALL_202B_ASSERTIONS_PASSED`)
+  - `npx tsc --noEmit -p apps/web/tsconfig.json; npx tsc --noEmit -p apps/api/tsconfig.json; npm run build --workspace=apps/api` (Exit 0)
+- **Test results:**
+  - Schema validation: PASS
+  - Disposable SQLite seed idempotency: PASS
+  - Optimizer 7 scenarios: Executed (confirmed `HC-6` and `HC-7` gaps in `cpsat.py`)
+  - `TASK-202A` HTTP integration test: PASS (`ALL_202A_ASSERTIONS_PASSED`)
+  - `TASK-202B` DB-to-optimizer integration test: PASS (`ALL_202B_ASSERTIONS_PASSED`; Greedy `FEASIBLE` 84 slots, CP-SAT `OPTIMAL` 84 slots, obj `0.0`)
+  - Typechecks & API build: PASS
+- **Known limitations:**
+  - `cpsat.py` still does not enforce `HC-6` (lab contiguity) or `HC-7` (`unavailable_slots`) — deferred to Phase 4 (`TASK-401`, `TASK-402`).
+  - `GET /api/v1/solver/studio-config` and `GET /api/v1/solver/candidates/compare` remain hardcoded (`TASK-502`).
+  - Existing local and Supabase databases were not modified.
+- **Remaining tasks:** Phase 3 (`TASK-301`) through Phase 10 (`TASK-1001`).

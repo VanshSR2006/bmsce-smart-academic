@@ -7,9 +7,266 @@ const OPTIMIZER_URL = process.env.OPTIMIZER_URL || 'http://localhost:8000';
 
 const solverRunSchema = z.object({
   engine: z.enum(['CONSTRAINT_CSP', 'HYBRID_MIP', 'SIMULATED_ANNEALING', 'GREEDY_BASELINE']).optional(),
+  academicTermId: z.string().optional(),
+  departmentId: z.string().optional(),
+  sectionIds: z.array(z.string()).optional(),
   semesters: z.array(z.number().int().min(1).max(8)).optional(),
   timeLimit: z.number().int().min(5).max(300).optional(),
 });
+
+const DAY_NUMBER_TO_CODE: Record<number, string> = {
+  1: 'MON',
+  2: 'TUE',
+  3: 'WED',
+  4: 'THU',
+  5: 'FRI',
+  6: 'SAT',
+};
+
+export interface SolverScopeInput {
+  academicTermId?: string;
+  departmentId?: string;
+  sectionIds?: string[];
+  semesters?: number[];
+  timeLimit?: number;
+}
+
+export class SolverPayloadError extends Error {
+  constructor(
+    public statusCode: number,
+    public code: string,
+    message: string,
+    public details?: unknown
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Build an optimizer OptimizeRequest strictly from Prisma academic relationships:
+ * Section -> SubjectOffering -> Subject & FacultyAssignment -> Faculty,
+ * FacultyAvailability, FacultyWorkloadRule, Room, and BellSchedule/TimePeriod.
+ */
+export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) {
+  const term = scope.academicTermId
+    ? await prisma.academicTerm.findUnique({ where: { id: scope.academicTermId } })
+    : await prisma.academicTerm.findFirst({
+        where: { status: 'ACTIVE' },
+        orderBy: { createdAt: 'desc' },
+      });
+
+  if (!term) {
+    throw new SolverPayloadError(
+      404,
+      'ACADEMIC_TERM_NOT_FOUND',
+      'No active academic term found for the requested scheduling scope.'
+    );
+  }
+
+  const sections = await prisma.section.findMany({
+    where: {
+      academicTermId: term.id,
+      status: 'ACTIVE',
+      ...(scope.departmentId ? { departmentId: scope.departmentId } : {}),
+      ...(scope.sectionIds?.length ? { id: { in: scope.sectionIds } } : {}),
+      ...(scope.semesters?.length ? { semesterNumber: { in: scope.semesters } } : {}),
+    },
+    orderBy: { sectionCode: 'asc' },
+  });
+
+  if (sections.length === 0) {
+    throw new SolverPayloadError(
+      400,
+      'EMPTY_SCHEDULING_SCOPE',
+      'No active sections found matching the requested academic scheduling scope.'
+    );
+  }
+
+  const sectionIds = sections.map((s) => s.id);
+  const offerings = await prisma.subjectOffering.findMany({
+    where: {
+      academicTermId: term.id,
+      sectionId: { in: sectionIds },
+    },
+    include: {
+      subject: true,
+      section: true,
+      facultyAssignments: {
+        where: { status: 'ACTIVE' },
+        include: { faculty: { include: { user: true } } },
+      },
+    },
+  });
+
+  if (offerings.length === 0) {
+    throw new SolverPayloadError(
+      400,
+      'NO_SUBJECT_OFFERINGS',
+      'No subject offerings exist for the selected sections in this academic term.'
+    );
+  }
+
+  const missingAssignments = offerings
+    .filter((o) => o.facultyAssignments.length === 0)
+    .map((o) => ({
+      offeringId: o.id,
+      sectionCode: o.section.sectionCode,
+      subjectCode: o.subject.subjectCode,
+    }));
+
+  if (missingAssignments.length > 0) {
+    throw new SolverPayloadError(
+      400,
+      'MISSING_FACULTY_ASSIGNMENTS',
+      'One or more subject offerings have no active faculty assignments.',
+      missingAssignments
+    );
+  }
+
+  // BellSchedule & TimePeriod -> derive periods_per_day and time->period lookup
+  const bellSchedule = await prisma.bellSchedule.findFirst({
+    where: { academicTermId: term.id },
+    include: { periods: { orderBy: { periodNumber: 'asc' } } },
+    orderBy: { isDefault: 'desc' },
+  });
+  const classPeriods = (bellSchedule?.periods || []).filter((p) => p.periodType === 'CLASS');
+  const periodsPerDay = classPeriods.length > 0 ? classPeriods.length : 7;
+
+  // Map each section to ONLY its own SubjectOfferings
+  const sectionSubjectsMap = new Map<string, Set<string>>();
+  for (const sec of sections) {
+    sectionSubjectsMap.set(sec.id, new Set());
+  }
+  const subjectsMap = new Map<
+    string,
+    { id: string; code: string; name: string; weekly_hours: number; is_lab: boolean; lab_duration_hours: number }
+  >();
+  const facultySubjectsMap = new Map<string, { name: string; subjectIds: Set<string>; assignmentMax?: number }>();
+
+  for (const off of offerings) {
+    sectionSubjectsMap.get(off.sectionId)?.add(off.subjectId);
+
+    const isLab = off.requiresLab || off.subject.subjectType === 'LAB';
+    const existingSubj = subjectsMap.get(off.subjectId);
+    const weeklyHours = Math.max(1, Math.round(off.requiredPeriodsPerWeek));
+    const labDuration = off.sessionDurationPeriods || off.subject.defaultDurationPeriods || (isLab ? 2 : 1);
+    if (!existingSubj) {
+      subjectsMap.set(off.subjectId, {
+        id: off.subjectId,
+        code: off.subject.subjectCode,
+        name: off.subject.name,
+        weekly_hours: weeklyHours,
+        is_lab: isLab,
+        lab_duration_hours: labDuration,
+      });
+    }
+
+    for (const fa of off.facultyAssignments) {
+      const entry = facultySubjectsMap.get(fa.facultyId) || {
+        name: fa.faculty.user.displayName,
+        subjectIds: new Set<string>(),
+        assignmentMax: fa.maxPeriodsPerWeek ?? undefined,
+      };
+      entry.subjectIds.add(off.subjectId);
+      facultySubjectsMap.set(fa.facultyId, entry);
+    }
+  }
+
+  const facultyIds = Array.from(facultySubjectsMap.keys());
+  const [workloadRules, availabilities, dbRooms] = await Promise.all([
+    prisma.facultyWorkloadRule.findMany({
+      where: { academicTermId: term.id, facultyId: { in: facultyIds } },
+    }),
+    prisma.facultyAvailability.findMany({
+      where: {
+        academicTermId: term.id,
+        facultyId: { in: facultyIds },
+        availabilityType: 'UNAVAILABLE',
+      },
+    }),
+    prisma.room.findMany({
+      where: {
+        isActive: true,
+        ...(scope.departmentId ? { departmentId: scope.departmentId } : {}),
+      },
+      orderBy: { roomCode: 'asc' },
+    }),
+  ]);
+
+  const ruleByFaculty = new Map(workloadRules.map((r) => [r.facultyId, r]));
+  const unavailByFaculty = new Map<string, string[]>();
+  for (const av of availabilities) {
+    if (!av.dayOfWeek) continue;
+    const dayCode = DAY_NUMBER_TO_CODE[av.dayOfWeek];
+    if (!dayCode) continue;
+
+    let periodIdx = -1;
+    if (av.startTime && classPeriods.length > 0) {
+      const idx = classPeriods.findIndex((p) => p.startTime === av.startTime);
+      if (idx >= 0) periodIdx = idx + 1; // 1-indexed for optimizer
+    }
+    if (periodIdx > 0) {
+      const list = unavailByFaculty.get(av.facultyId) || [];
+      list.push(`${dayCode}-${periodIdx}`);
+      unavailByFaculty.set(av.facultyId, list);
+    }
+  }
+
+  const minSectionStudents = Math.min(...sections.map((s) => s.studentCount));
+  const eligibleRooms = dbRooms.filter((r) => r.capacity >= minSectionStudents || r.roomType === 'LAB');
+  if (eligibleRooms.length === 0) {
+    throw new SolverPayloadError(
+      400,
+      'INSUFFICIENT_ROOMS',
+      'No active rooms meet the minimum capacity or capability requirements.'
+    );
+  }
+
+  const dailyCaps = workloadRules
+    .map((r) => r.maxPeriodsPerDay)
+    .filter((v): v is number => typeof v === 'number' && v > 0);
+  const maxDailyFacultyHours = dailyCaps.length > 0 ? Math.min(...dailyCaps) : 4;
+
+  const payload = {
+    sections: sections.map((s) => ({
+      id: s.id,
+      label: s.sectionCode,
+      student_count: s.studentCount,
+      subject_ids: Array.from(sectionSubjectsMap.get(s.id) || []),
+    })),
+    subjects: Array.from(subjectsMap.values()),
+    faculty: facultyIds.map((fid) => {
+      const info = facultySubjectsMap.get(fid)!;
+      const rule = ruleByFaculty.get(fid);
+      return {
+        id: fid,
+        name: info.name,
+        subject_ids: Array.from(info.subjectIds),
+        max_weekly_hours: rule?.maxPeriodsPerWeek ?? info.assignmentMax ?? 18,
+        unavailable_slots: unavailByFaculty.get(fid) || [],
+      };
+    }),
+    rooms: eligibleRooms.map((r) => ({
+      id: r.id,
+      name: r.roomCode,
+      capacity: r.capacity,
+      is_lab: r.roomType === 'LAB',
+    })),
+    constraints: {
+      enforce_faculty_non_overlap: true,
+      enforce_room_non_overlap: true,
+      enforce_section_non_overlap: true,
+      enforce_lab_contiguity: true,
+      max_daily_faculty_hours: maxDailyFacultyHours,
+      avoid_first_period_labs: true,
+      time_limit_seconds: scope.timeLimit ?? 30,
+    },
+    days: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+    periods_per_day: periodsPerDay,
+  };
+
+  return { term, payload };
+}
 
 /** Call the Python optimizer service. Returns null if unavailable (fallback to mock). */
 async function callOptimizer(payload: object): Promise<object | null> {
@@ -158,7 +415,8 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
     });
   }
 
-  const { engine = 'CONSTRAINT_CSP', semesters = [5], timeLimit = 30 } = parseResult.data;
+  const { engine = 'CONSTRAINT_CSP', academicTermId, departmentId, sectionIds, semesters, timeLimit = 30 } =
+    parseResult.data;
   const startTime = Date.now();
   const jobId = `job-solver-${Date.now()}`;
 
@@ -170,90 +428,80 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
     startedAt: new Date().toISOString(),
   });
 
-  const term = await prisma.academicTerm.findFirst();
-  const user = await prisma.user.findFirst();
+  let built: { term: { id: string }; payload: any };
+  try {
+    built = await buildOptimizerPayloadFromDb({
+      academicTermId,
+      departmentId,
+      sectionIds,
+      semesters,
+      timeLimit,
+    });
+  } catch (err) {
+    if (err instanceof SolverPayloadError) {
+      return res.status(err.statusCode).json({
+        error: {
+          code: err.code,
+          message: err.message,
+          details: err.details,
+        },
+      });
+    }
+    throw err;
+  }
 
-  // Build optimizer payload from DB or synthetic dataset
-  const dbSections = await prisma.section.findMany();
-  const dbSubjects = await prisma.subject.findMany();
-  const dbFaculty = await prisma.faculty.findMany({ include: { user: true } });
-  const dbRooms = await prisma.room.findMany();
+  const user = req.user?.userId
+    ? { id: req.user.userId }
+    : await prisma.user.findFirst();
 
-  const payload = {
-    sections: dbSections.length > 0 ? dbSections.map(s => ({
-      id: s.id,
-      label: s.sectionCode || s.displayName || 'Section',
-      student_count: Number(s.studentCount) || 60,
-      subject_ids: dbSubjects.map(sub => sub.id),
-    })) : [
-      { id: 'sec-cse-b', label: 'CSE-B', student_count: 64, subject_ids: ['s-daa', 's-dbms', 's-cn', 's-os', 's-toc', 's-se'] },
-      { id: 'sec-cse-a', label: 'CSE-A', student_count: 62, subject_ids: ['s-daa', 's-dbms', 's-cn', 's-os', 's-toc', 's-se'] },
-    ],
-    subjects: dbSubjects.length > 0 ? dbSubjects.map(sub => ({
-      id: sub.id,
-      code: sub.subjectCode,
-      name: sub.name,
-      weekly_hours: sub.subjectType === 'LAB' ? 3 : 4,
-      is_lab: sub.subjectType === 'LAB',
-      lab_duration_hours: sub.subjectType === 'LAB' ? 3 : 2,
-    })) : [
-      { id: 's-daa', code: '22CSSPCDAA', name: 'Design & Analysis of Algorithms', weekly_hours: 4, is_lab: false, lab_duration_hours: 2 },
-      { id: 's-dbms', code: '22CSPC204', name: 'Database Management Systems', weekly_hours: 4, is_lab: false, lab_duration_hours: 2 },
-      { id: 's-cn', code: '22CSPC205', name: 'Computer Networks', weekly_hours: 3, is_lab: false, lab_duration_hours: 2 },
-      { id: 's-os', code: '22CSPC206', name: 'Operating Systems', weekly_hours: 3, is_lab: false, lab_duration_hours: 2 },
-      { id: 's-toc', code: '22CSPC207', name: 'Theory of Computation', weekly_hours: 3, is_lab: false, lab_duration_hours: 2 },
-      { id: 's-se', code: '22CSPE208', name: 'Software Engineering', weekly_hours: 3, is_lab: false, lab_duration_hours: 2 },
-    ],
-    faculty: dbFaculty.length > 0 ? dbFaculty.map(f => ({
-      id: f.id,
-      name: f.user?.displayName || f.employeeCode || 'Faculty Member',
-      subject_ids: dbSubjects.map(sub => sub.id),
-      max_weekly_hours: 18,
-      unavailable_slots: [],
-    })) : [
-      { id: 'f-ramanathan', name: 'Dr. A. Ramanathan', subject_ids: ['s-daa'], max_weekly_hours: 16, unavailable_slots: [] },
-      { id: 'f-sneha', name: 'Prof. Sneha K.', subject_ids: ['s-dbms'], max_weekly_hours: 18, unavailable_slots: [] },
-      { id: 'f-rajeshwari', name: 'Dr. Rajeshwari V.', subject_ids: ['s-cn'], max_weekly_hours: 18, unavailable_slots: [] },
-      { id: 'f-vikram', name: 'Prof. Vikram Sen', subject_ids: ['s-os'], max_weekly_hours: 18, unavailable_slots: [] },
-      { id: 'f-rao', name: 'Dr. K. M. Rao', subject_ids: ['s-toc'], max_weekly_hours: 18, unavailable_slots: [] },
-      { id: 'f-nandhini', name: 'Dr. M. Nandhini', subject_ids: ['s-se'], max_weekly_hours: 18, unavailable_slots: [] },
-      { id: 'f-malathi', name: 'Prof. S. Malathi', subject_ids: ['s-daa', 's-se'], max_weekly_hours: 18, unavailable_slots: [] },
-    ],
-    rooms: dbRooms.length > 0 ? dbRooms.map(r => ({
-      id: r.id,
-      name: r.roomCode || r.name,
-      capacity: Number(r.capacity) || 60,
-      is_lab: r.roomType === 'LAB',
-    })) : [
-      { id: 'r-pj301', name: 'PJ-301', capacity: 65, is_lab: false },
-      { id: 'r-pj302', name: 'PJ-302', capacity: 60, is_lab: false },
-      { id: 'r-pj304', name: 'PJ-304', capacity: 65, is_lab: false },
-    ],
-    constraints: {
-      enforce_faculty_non_overlap: true,
-      enforce_room_non_overlap: true,
-      enforce_section_non_overlap: true,
-      enforce_lab_contiguity: true,
-      max_daily_faculty_hours: 4,
-      avoid_first_period_labs: true,
-      time_limit_seconds: timeLimit,
-    },
-    days: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
-    periods_per_day: 7,
-  };
+  if (!user) {
+    return res.status(400).json({
+      error: { code: 'REQUESTER_NOT_FOUND', message: 'No user record available to attribute optimization run.' },
+    });
+  }
 
   // Call the real Python optimizer service
-  const optimizerResult: any = await callOptimizer(payload);
+  const optimizerResult: any = await callOptimizer(built.payload);
   const runtimeMs = Date.now() - startTime;
 
-  const solverStatus = optimizerResult?.feasible ? 'OPTIMAL' : 'FEASIBLE';
-  const candidateCount = optimizerResult?.candidates?.length || 2;
+  if (!optimizerResult || !Array.isArray(optimizerResult.candidates) || optimizerResult.candidates.length === 0) {
+    const failedRun = await prisma.optimizationRun.create({
+      data: {
+        academicTermId: built.term.id,
+        requestedById: user.id,
+        algorithmCode: engine,
+        timeLimitSeconds: timeLimit,
+        status: 'FAILED',
+        solverStatus: 'UNAVAILABLE',
+        startedAt: new Date(startTime),
+        completedAt: new Date(),
+        runtimeMs: BigInt(runtimeMs),
+        inputSnapshot: JSON.stringify({
+          sections: built.payload.sections.length,
+          subjects: built.payload.subjects.length,
+          faculty: built.payload.faculty.length,
+          rooms: built.payload.rooms.length,
+        }),
+      },
+    });
+
+    return res.status(503).json({
+      error: {
+        code: 'OPTIMIZER_UNAVAILABLE',
+        message: 'Optimizer service is unavailable or returned no candidates. No timetable candidate was persisted.',
+        runId: failedRun.id,
+      },
+    });
+  }
+
+  const solverStatus = optimizerResult.feasible ? 'OPTIMAL' : 'FEASIBLE';
+  const candidateCount = optimizerResult.candidates.length;
 
   // Persist run
   const run = await prisma.optimizationRun.create({
     data: {
-      academicTermId: term?.id || 'term-id',
-      requestedById: user?.id || 'user-id',
+      academicTermId: built.term.id,
+      requestedById: user.id,
       algorithmCode: engine,
       timeLimitSeconds: timeLimit,
       status: 'COMPLETED',
@@ -261,29 +509,31 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
       startedAt: new Date(startTime),
       completedAt: new Date(),
       runtimeMs: BigInt(runtimeMs),
-      inputSnapshot: JSON.stringify({ sections: payload.sections.length, subjects: payload.subjects.length }),
+      inputSnapshot: JSON.stringify({
+        sections: built.payload.sections.length,
+        subjects: built.payload.subjects.length,
+        faculty: built.payload.faculty.length,
+        rooms: built.payload.rooms.length,
+      }),
     },
   });
 
-  // If optimizer returned candidates, save candidate records
-  if (optimizerResult?.candidates && Array.isArray(optimizerResult.candidates)) {
-    for (let i = 0; i < optimizerResult.candidates.length; i++) {
-      const c = optimizerResult.candidates[i];
-      await prisma.optimizationCandidate.create({
-        data: {
-          optimizationRunId: run.id,
-          candidateNumber: i + 1,
-          label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver})`,
-          solverStatus: c.solver_status || 'OPTIMAL',
-          isFeasible: c.hard_violations === 0,
-          hardViolationCount: c.hard_violations || 0,
-          softPenalty: c.objective_score || 0,
-          qualityScore: Math.max(0, 100 - (c.objective_score || 0)),
-          metrics: JSON.stringify(c.metrics || {}),
-          explanation: `Generated via ${c.solver} engine. ${c.slots?.length || 0} scheduled contact periods.`,
-        },
-      });
-    }
+  for (let i = 0; i < optimizerResult.candidates.length; i++) {
+    const c = optimizerResult.candidates[i];
+    await prisma.optimizationCandidate.create({
+      data: {
+        optimizationRunId: run.id,
+        candidateNumber: i + 1,
+        label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver})`,
+        solverStatus: c.solver_status || 'OPTIMAL',
+        isFeasible: c.hard_violations === 0,
+        hardViolationCount: c.hard_violations || 0,
+        softPenalty: c.objective_score || 0,
+        qualityScore: Math.max(0, 100 - (c.objective_score || 0)),
+        metrics: JSON.stringify(c.metrics || {}),
+        explanation: `Generated via ${c.solver} engine. ${c.slots?.length || 0} scheduled contact periods.`,
+      },
+    });
   }
 
   return res.json({
@@ -293,8 +543,8 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
       solverStatus,
       runtimeMs,
       candidatesGenerated: candidateCount,
-      candidates: optimizerResult?.candidates || null,
-      source: optimizerResult ? 'OR_TOOLS_PYTHON_SERVICE' : 'FALLBACK_SYNTHETIC',
+      candidates: optimizerResult.candidates,
+      source: 'OR_TOOLS_PYTHON_SERVICE',
     },
   });
 });

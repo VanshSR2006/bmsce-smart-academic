@@ -2,50 +2,45 @@
 
 Project target: 10 December 2026
 
-Current phase: PHASE 1
-Phase status: COMPLETE (Awaiting user approval for Phase 2)
+Current phase: PHASE 2
+Phase status: COMPLETE (Awaiting user approval for Phase 3)
 
 Last completed task:
-TASK-103 — Wire Disruption Repair Authorize & Apply (`TimetableRepairCenter.tsx`, `repairs.router.ts`, `packages/contracts/src/repairs.ts`).
+TASK-202B — Make Optimizer Input Relationship-Driven (`apps/api/src/modules/solver/solver.router.ts`).
 
 Currently executing:
-None — Phase 1 complete (`TASK-101A`, `TASK-101B`, `TASK-102`, `TASK-103`). Waiting for user approval before starting Phase 2.
+None — Phase 2 complete (`TASK-201`, `TASK-202A`, `TASK-202B`). Waiting for user approval before starting Phase 3.
 
 Last verified result:
-- `npm run build --workspace=packages/contracts`: PASS (exit 0)
-- `npx tsc --noEmit -p apps/web/tsconfig.json`: PASS (exit 0)
 - `npx tsc --noEmit -p apps/api/tsconfig.json`: PASS (exit 0)
 - `npm run build --workspace=apps/api`: PASS (exit 0)
-- `npm run build --workspace=apps/web`: PASS (exit 0, 1646 modules, 7.71s)
-- `RepairAuthorizeRequestSchema` & `RepairAuthorizeResponseSchema` validation check: PASS (`reqOk true`, `reqBadRejected true`, `resOk true`, `resDup true`)
+- Disposable SQLite + Python optimizer integration test (`test_solver_202b.ts`): PASS (`ALL_202B_ASSERTIONS_PASSED`, Greedy `FEASIBLE` 84 slots / 0 hard violations, CP-SAT `OPTIMAL` 84 slots / 0 hard violations / obj `0.0`)
 
-Files created or modified in TASK-103:
-- `packages/contracts/src/repairs.ts` (modified — added `RepairAuthorizeRequestSchema` and `RepairAuthorizeResponseSchema`; rebuilt `.js`/`.d.ts`)
-- `apps/api/src/modules/repairs/repairs.router.ts` (modified — validated `incidentId` & `strategyId` against active demo incident/strategies, added duplicate audit-log check, clarified demo audit-only response with `appliedToTimetable: false`)
-- `apps/web/src/features/repairs/TimetableRepairCenter.tsx` (modified — wired **Authorize & Apply** to `POST /api/v1/repairs/authorize`, added disabled/loading/ref-guard/error/confirmation states and silent refresh)
+Files created or modified in TASK-202B:
+- `apps/api/src/modules/solver/solver.router.ts` (modified — added `buildOptimizerPayloadFromDb` and `SolverPayloadError`, removed all-to-all subject/faculty mapping and hardcoded demo fallback, added `MISSING_FACULTY_ASSIGNMENTS` / `EMPTY_SCHEDULING_SCOPE` / `INSUFFICIENT_ROOMS` / `OPTIMIZER_UNAVAILABLE` handling)
 - `docs/development/CURRENT_PROGRESS.md` (updated)
 - `docs/development/PHASE_LOG.md` (updated)
 - `docs/development/TASK_BACKLOG.md` (updated)
 
 Tests executed:
-- `npm run build --workspace=packages/contracts; npx tsc --noEmit -p apps/web/tsconfig.json; npx tsc --noEmit -p apps/api/tsconfig.json; npm run build --workspace=apps/api; npm run build --workspace=apps/web` -> Exit 0 (1646 modules, 7.71s)
-- `npx tsx -e` `RepairAuthorizeRequestSchema` / `RepairAuthorizeResponseSchema` check -> Exit 0
+- `npx tsc --noEmit -p apps/api/tsconfig.json; npm run build --workspace=apps/api` -> Exit 0
+- Disposable SQLite `prisma db push` + `runSyntheticCseSeed` + `buildOptimizerPayloadFromDb` + Python `run_greedy`/`run_cpsat` (`test_solver_202b.ts`) -> Exit 0 (`ALL_202B_ASSERTIONS_PASSED`)
 
 Known blockers / limitations:
-- `POST /api/v1/repairs/authorize` records an `auditLog` entry only (`appliedToTimetable: false`, `isDemoData: true`); it does not mutate published timetables (scheduled for `TASK-602`).
-- Existing RBAC check (`if (req.user && ...)`) does not reject unauthenticated requests when `req.user` is undefined (broad RBAC enforcement is scheduled for `TASK-802`).
-- Runtime cases A–H in `TimetableRepairCenter.tsx` were verified by TypeScript/Vite build, Zod schema checks, and code inspection (live browser/HTTP integration test not executed).
+- `buildOptimizerPayloadFromDb` now passes `is_lab`, `lab_duration_hours`, and `unavailable_slots` from DB relationships, **but `cpsat.py` still does not enforce `HC-6` (lab contiguity) or `HC-7` (`unavailable_slots`)** — scheduled for Phase 4 (`TASK-401`, `TASK-402`).
+- `GET /api/v1/solver/studio-config` and `GET /api/v1/solver/candidates/compare` in `solver.router.ts` remain hardcoded demo endpoints (scheduled for Phase 5 `TASK-502`).
+- `days` defaults to `['MON', 'TUE', 'WED', 'THU', 'FRI']` (working-day calendar derivation is a future enhancement).
 
 Next exact action:
-Await user approval to begin Phase 2 (`TASK-201`: Expand `prisma/seed.ts` with multi-section CSE synthetic dataset).
+Await user approval to begin Phase 3 (`TASK-301`: Connect `NepScheme` to live `Subject` & `SubjectOffering` Prisma records).
 
 Next phase allowed:
 Yes (upon explicit user approval)
 
 Important instructions for the next model:
-- Read `docs/development/CURRENT_PROGRESS.md`, `MASTER_IMPLEMENTATION_PLAN.md`, `PHASE_LOG.md`, and `TASK_BACKLOG.md` first.
-- Do not modify `.env` or run destructive DB commands against Supabase without explicit authorization.
-- Start Phase 2 with `TASK-201` in `TASK_BACKLOG.md`.
+- Read `docs/development/CURRENT_PROGRESS.md`, `DATA_ARCHITECTURE_READINESS.md`, `PHASE_LOG.md`, and `TASK_BACKLOG.md` first.
+- Do not modify `.env` or Supabase.
+- Start Phase 3 with `TASK-301` in `TASK_BACKLOG.md`.
 
 Last updated:
-2026-11-26 00:56 IST
+2026-11-26 01:41 IST
