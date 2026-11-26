@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import type { NepSchemeCategory, NepSchemeCourse, NepSchemeOverview } from '@bmsce/contracts';
 import { prisma } from '../../config/prisma.js';
 
 export const academicsRouter = Router();
@@ -245,129 +246,195 @@ academicsRouter.get('/rooms/overview', async (req: Request, res: Response) => {
 // ============================================================================
 // 3. NEP 2022 Curriculum Scheme Overview (/api/v1/nep-scheme/overview)
 // ============================================================================
+const SUBJECT_TYPE_LABELS: Record<string, string> = {
+  THEORY: 'Theory Courses',
+  LAB: 'Laboratory / Practical Courses',
+  TUTORIAL: 'Tutorial Courses',
+};
+
 academicsRouter.get('/nep-scheme/overview', async (req: Request, res: Response) => {
-  const subjects = await prisma.subject.findMany({
-    include: { offerings: true },
-    orderBy: { subjectCode: 'asc' },
-  });
+  const departmentId =
+    typeof req.query.departmentId === 'string' && req.query.departmentId.trim()
+      ? req.query.departmentId.trim()
+      : null;
+  const programId =
+    typeof req.query.programId === 'string' && req.query.programId.trim()
+      ? req.query.programId.trim()
+      : null;
+  const academicTermId =
+    typeof req.query.academicTermId === 'string' && req.query.academicTermId.trim()
+      ? req.query.academicTermId.trim()
+      : null;
 
-  const nepVerticals = [
-    {
-      code: 'PCC',
-      title: 'Professional Core Courses',
-      description: 'Mandatory foundational computer science competencies with theoretical depth and integrated laboratory practicum.',
-      color: 'blue',
-      totalCredits: 68,
-      courses: [
-        { code: '22CSSPCDAA', name: 'Design & Analysis of Algorithms', ltp: '3:0:2', credits: 4, hoursPerWeek: 5, semester: 5, isLabContiguous: true },
-        { code: '22CSSPCDBMS', name: 'Database Management Systems', ltp: '3:0:2', credits: 4, hoursPerWeek: 5, semester: 5, isLabContiguous: true },
-        { code: '22CSSPCCNT', name: 'Computer Networks', ltp: '3:0:2', credits: 4, hoursPerWeek: 5, semester: 5, isLabContiguous: true },
-        { code: '22CSSPCOPS', name: 'Operating Systems', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-        { code: '22CSSPCSE', name: 'Software Engineering & Agile', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-      ],
-    },
-    {
-      code: 'PEC',
-      title: 'Professional Elective Courses',
-      description: 'Specialization tracks in Artificial Intelligence, Cloud Infrastructure, Systems & Cyber Security.',
-      color: 'purple',
-      totalCredits: 20,
-      courses: [
-        { code: '22CSPE501', name: 'Machine Learning Fundamentals', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-        { code: '22CSPE502', name: 'Cloud Native Microservices', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-        { code: '22CSPE503', name: 'Applied Cryptography & Privacy', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-      ],
-    },
-    {
-      code: 'OEC',
-      title: 'Open Elective Courses',
-      description: 'Interdisciplinary domain offerings across Mechanical, Biotechnology, and Management clusters.',
-      color: 'amber',
-      totalCredits: 12,
-      courses: [
-        { code: '22CSOE01', name: 'Computational Biology & Genomics', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-        { code: '22CSOE02', name: 'Digital Product Management & FinTech', ltp: '3:0:0', credits: 3, hoursPerWeek: 3, semester: 5, isLabContiguous: false },
-      ],
-    },
-    {
-      code: 'ESC',
-      title: 'Engineering Science & Mathematics',
-      description: 'Core analytical methods, discrete mathematics, and computational modeling foundations.',
-      color: 'emerald',
-      totalCredits: 24,
-      courses: [
-        { code: '22MASPCTFL', name: 'Theory of Computation & Automata', ltp: '3:1:0', credits: 4, hoursPerWeek: 4, semester: 5, isLabContiguous: false },
-        { code: '22MA201', name: 'Linear Algebra & Probability Models', ltp: '3:1:0', credits: 4, hoursPerWeek: 4, semester: 3, isLabContiguous: false },
-      ],
-    },
-    {
-      code: 'AEC_SEC',
-      title: 'Ability & Skill Enhancement / Practical Labs',
-      description: 'Hands-on experiential learning, open-source development, and industry certifications.',
-      color: 'teal',
-      totalCredits: 16,
-      courses: [
-        { code: '22CSSPL02', name: 'DAA Lab Practicum (Advanced Stubs)', ltp: '0:0:3', credits: 1.5, hoursPerWeek: 3, semester: 5, isLabContiguous: true },
-        { code: '22CSSPL01', name: 'DBMS Query & Schema Tuning Lab', ltp: '0:0:3', credits: 1.5, hoursPerWeek: 3, semester: 5, isLabContiguous: true },
-        { code: '22CSSPL03', name: 'Computer Networks Packet Simulator Lab', ltp: '0:0:3', credits: 1.5, hoursPerWeek: 3, semester: 5, isLabContiguous: true },
-      ],
-    },
-    {
-      code: 'PROJ',
-      title: 'Capstone, Internships & Societal Projects',
-      description: 'Semester 7 & 8 major capstone projects, startup incubation, and full-semester corporate internships.',
-      color: 'rose',
-      totalCredits: 20,
-      courses: [
-        { code: '22CSP801', name: 'Industry Internship Experience', ltp: '0:0:16', credits: 10, hoursPerWeek: 16, semester: 8, isLabContiguous: true },
-        { code: '22CSP701', name: 'Major Capstone Project Phase 1', ltp: '0:0:8', credits: 4, hoursPerWeek: 8, semester: 7, isLabContiguous: true },
-      ],
-    },
-  ];
-
-  const solverRulesMapping = [
-    {
-      mandate: 'NEP 2022 Clause 4.3: Contiguous Laboratory Periods',
-      rule: 'All practical courses (L:T:P with P > 0) must be scheduled as contiguous 3-hour blocks without mid-session breaks.',
-      enforcement: 'Hard Constraint (HC-6) in OR-Tools CP-SAT formulation.',
-      status: 'ENFORCED',
-    },
-    {
-      mandate: 'Cognitive Load Cap: Max 2h Continuous Theory',
-      rule: 'Cohorts must not be assigned more than 110 minutes of continuous theoretical lecture in the same room.',
-      enforcement: 'Soft Constraint (SC-2) with penalty weight 82.',
-      status: 'ENFORCED',
-    },
-    {
-      mandate: 'Curfew Recess Protection: Tea & Lunch Intervals',
-      rule: 'Tea recess (10:30–10:45 AM) and institutional lunch (12:45–01:45 PM) are strictly non-instructional.',
-      enforcement: 'Hard Curfew Mask (zero variable generation in locked periods).',
-      status: 'ENFORCED',
-    },
-    {
-      mandate: 'Credit-to-Contact Compliance',
-      rule: 'Each 1 credit of theory equals 1 contact hour; each 1 credit of practical equals 2 contact hours minimum.',
-      enforcement: 'Hard Coverage Constraint (HC-4).',
-      status: 'ENFORCED',
-    },
-  ];
-
-  return res.json({
-    data: {
-      schemeLabel: 'Autonomous Curriculum Scheme 2022 / NEP 2022',
-      department: 'Department of Computer Science & Engineering',
-      degree: 'B.Tech in Computer Science & Engineering (160 Total Credits)',
-      totalDegreeCredits: 160,
-      semesterCreditsTarget: '20 to 24 Credits / Semester',
-      verticals: nepVerticals,
-      solverRules: solverRulesMapping,
-      statistics: {
-        totalCoreCredits: 68,
-        totalElectiveCredits: 32,
-        totalSkillCredits: 16,
-        practicalHandsOnRatio: '38.5% of total contact periods involve laboratory or project work',
+  const [departments, programs, academicTerms, offerings] = await Promise.all([
+    prisma.department.findMany({ orderBy: { code: 'asc' } }),
+    prisma.program.findMany({ orderBy: { code: 'asc' } }),
+    prisma.academicTerm.findMany({ orderBy: { createdAt: 'desc' } }),
+    prisma.subjectOffering.findMany({
+      where: {
+        ...(academicTermId ? { academicTermId } : {}),
+        ...(departmentId || programId
+          ? {
+              section: {
+                ...(departmentId ? { departmentId } : {}),
+                ...(programId ? { programId } : {}),
+              },
+            }
+          : {}),
       },
+      include: {
+        subject: { include: { department: true } },
+        section: true,
+        academicTerm: true,
+      },
+      orderBy: { subject: { subjectCode: 'asc' } },
+    }),
+  ]);
+
+  // Deduplicate subjects across multiple offerings
+  const subjectMap = new Map<
+    string,
+    {
+      course: NepSchemeCourse;
+      semesters: Set<number>;
+      totalOfferingHours: number;
+      labOfferingHours: number;
+    }
+  >();
+
+  let totalOfferings = 0;
+  let totalOfferingWeeklyHours = 0;
+  let totalLabOfferingHours = 0;
+
+  for (const off of offerings) {
+    totalOfferings += 1;
+    const offHrs = Number(off.requiredPeriodsPerWeek) || 0;
+    totalOfferingWeeklyHours += offHrs;
+    const isLab = off.requiresLab || off.subject.subjectType === 'LAB';
+    if (isLab) {
+      totalLabOfferingHours += offHrs;
+    }
+
+    const existing = subjectMap.get(off.subjectId);
+    if (!existing) {
+      subjectMap.set(off.subjectId, {
+        course: {
+          id: off.subject.id,
+          code: off.subject.subjectCode,
+          name: off.subject.name,
+          subjectType: off.subject.subjectType || 'UNSPECIFIED',
+          departmentName: off.subject.department?.name || 'Department',
+          semesters: [off.section.semesterNumber],
+          offeringCount: 1,
+          hoursPerWeek: offHrs,
+          sessionDurationPeriods: off.sessionDurationPeriods || off.subject.defaultDurationPeriods || 1,
+          requiresLab: isLab,
+          isLabContiguous: Boolean(off.requiresContiguousSlots),
+          credits: null, // Not represented in current Prisma schema
+          ltp: null, // Not represented in current Prisma schema
+        },
+        semesters: new Set([off.section.semesterNumber]),
+        totalOfferingHours: offHrs,
+        labOfferingHours: isLab ? offHrs : 0,
+      });
+    } else {
+      existing.course.offeringCount += 1;
+      existing.semesters.add(off.section.semesterNumber);
+      existing.course.semesters = Array.from(existing.semesters).sort((a, b) => a - b);
+      existing.course.isLabContiguous = existing.course.isLabContiguous || Boolean(off.requiresContiguousSlots);
+      existing.totalOfferingHours += offHrs;
+      if (isLab) existing.labOfferingHours += offHrs;
+    }
+  }
+
+  // Group deduplicated subjects by actual Subject.subjectType (no invented NEP verticals)
+  const categoryMap = new Map<string, NepSchemeCategory>();
+  let theorySubjectCount = 0;
+  let labSubjectCount = 0;
+  let tutorialOtherCount = 0;
+  let totalUniqueWeeklyHours = 0;
+
+  for (const entry of subjectMap.values()) {
+    const c = entry.course;
+    totalUniqueWeeklyHours += c.hoursPerWeek;
+    if (c.subjectType === 'THEORY') theorySubjectCount += 1;
+    else if (c.subjectType === 'LAB') labSubjectCount += 1;
+    else tutorialOtherCount += 1;
+
+    const cat = categoryMap.get(c.subjectType) || {
+      code: c.subjectType,
+      title: SUBJECT_TYPE_LABELS[c.subjectType] || `${c.subjectType} Courses`,
+      subjectCount: 0,
+      offeringCount: 0,
+      totalWeeklyHours: 0,
+      courses: [],
+    };
+    cat.subjectCount += 1;
+    cat.offeringCount += c.offeringCount;
+    cat.totalWeeklyHours += c.hoursPerWeek;
+    cat.courses.push(c);
+    categoryMap.set(c.subjectType, cat);
+  }
+
+  const selectedDept = departmentId ? departments.find((d) => d.id === departmentId) : null;
+  const selectedProg = programId ? programs.find((p) => p.id === programId) : null;
+  const selectedTerm = academicTermId ? academicTerms.find((t) => t.id === academicTermId) : null;
+
+  const labContactRatioPct =
+    totalOfferingWeeklyHours > 0
+      ? Math.round((totalLabOfferingHours / totalOfferingWeeklyHours) * 1000) / 10
+      : 0;
+
+  const data: NepSchemeOverview = {
+    hasData: subjectMap.size > 0,
+    isDemoData: departments.some((d) => d.isDemo) || academicTerms.some((t) => t.isDemo),
+    schemeLabel: 'Curriculum & Subject Offerings Overview',
+    department: selectedDept ? selectedDept.name : 'All Departments',
+    academicTermLabel: selectedTerm
+      ? `${selectedTerm.academicYearLabel} • ${selectedTerm.termLabel}`
+      : 'All Academic Terms',
+    programLabel: selectedProg ? `${selectedProg.code} — ${selectedProg.name}` : 'All Programs',
+    appliedFilters: {
+      departmentId,
+      programId,
+      academicTermId,
     },
-  });
+    availableFilters: {
+      departments: departments.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+      programs: programs.map((p) => ({ id: p.id, code: p.code, name: p.name })),
+      academicTerms: academicTerms.map((t) => ({
+        id: t.id,
+        academicYearLabel: t.academicYearLabel,
+        termLabel: t.termLabel,
+      })),
+    },
+    schemaLimitations: [
+      'Subject credits, L:T:P ratios, and NEP vertical codes (PCC/PEC/OEC/ESC/AEC) are not stored in the current Subject or SubjectOffering Prisma models.',
+    ],
+    categories: Array.from(categoryMap.values()),
+    statistics: {
+      totalUniqueSubjects: subjectMap.size,
+      totalOfferings,
+      totalWeeklyContactHours: totalUniqueWeeklyHours,
+      theorySubjectCount,
+      labSubjectCount,
+      tutorialOtherCount,
+      labContactRatioPct,
+    },
+    staticReferenceRules: [
+      {
+        mandate: 'Contiguous Laboratory Periods (Reference)',
+        rule: 'Practical offerings with requiresContiguousSlots=true require uninterrupted multi-period blocks.',
+        enforcement: 'CP-SAT Hard Constraint (HC-6)',
+      },
+      {
+        mandate: 'Weekly Contact Hour Coverage (Reference)',
+        rule: 'Each section offering must be assigned its exact requiredPeriodsPerWeek.',
+        enforcement: 'CP-SAT Hard Constraint (HC-4)',
+      },
+    ],
+  };
+
+  return res.json({ data });
 });
 

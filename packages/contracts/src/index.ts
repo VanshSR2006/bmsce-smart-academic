@@ -7,4 +7,5 @@ export * from './conflicts.js';
 export * from './repairs.js';
 export * from './communication.js';
 export * from './examinations.js';
+export * from './dashboard.js';
 

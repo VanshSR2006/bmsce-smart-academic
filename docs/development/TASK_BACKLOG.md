@@ -25,8 +25,8 @@ Priorities: **P0** (Critical crashes / data integrity / core solver) · **P1** (
 
 | ID | Description | Relevant Files | Dependencies | Priority | Status | Acceptance Criteria |
 |---|---|---|---|---|---|---|
-| `TASK-301` | Connect `NepScheme` (`/api/v1/nep-scheme/overview`) to live `Subject` & `SubjectOffering` Prisma records | `academics.router.ts`, `NepScheme.tsx` | `TASK-201` | **P1** | `PENDING` | NEP verticals and course credits derive from PostgreSQL records |
-| `TASK-302` | Remove hardcoded `currentStatus` overrides in `/api/v1/rooms/overview` and compute from `TimetableSession` / `RoomAvailability` | `academics.router.ts` | `TASK-201` | **P1** | `PENDING` | Room status reflects actual DB state |
+| `TASK-301` | Connect `NepScheme` (`/api/v1/nep-scheme/overview`) to live `Subject` & `SubjectOffering` Prisma records | `packages/contracts/src/academics.ts`, `academics.router.ts`, `NepScheme.tsx` | `TASK-201` | **P1** | `DONE` | NEP curriculum overview and deduplicated subjects derive from Prisma records with explicit schema limitations for missing credits/L:T:P/verticals |
+| `TASK-302` | Connect `HODDashboard` (`/api/v1/hod/dashboard-overview`) to live Prisma aggregations across academic, faculty, timetable, room, and alert tables | `packages/contracts/src/dashboard.ts`, `dashboard.router.ts`, `HODDashboard.tsx` | `TASK-201` | **P1** | `DONE` | HOD dashboard metrics, room matrix, section coverage, and alerts derive from scoped Prisma queries with explicit null/empty states |
 
 ## Phase 4 — CP-SAT Optimization Engine Completion
 
