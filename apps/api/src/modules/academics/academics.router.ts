@@ -1,246 +1,516 @@
-import { Router, Request, Response } from 'express';
-import type { NepSchemeCategory, NepSchemeCourse, NepSchemeOverview } from '@bmsce/contracts';
+import { Router, Request, Response, NextFunction } from 'express';
+import type {
+  NepSchemeCategory,
+  NepSchemeCourse,
+  NepSchemeOverview,
+  RoomsOverview,
+  WorkloadOverview,
+} from '@bmsce/contracts';
 import { prisma } from '../../config/prisma.js';
 
 export const academicsRouter = Router();
 
+function parseQueryId(val: unknown): string | null {
+  return typeof val === 'string' && val.trim() ? val.trim() : null;
+}
+
 // ============================================================================
 // 1. Faculty Workload Overview (/api/v1/workload/overview)
 // ============================================================================
-academicsRouter.get('/workload/overview', async (req: Request, res: Response) => {
-  // Query faculty with user, workload rules, and sessions
-  const facultyList = await prisma.faculty.findMany({
-    include: {
-      user: true,
-      department: true,
-      workloadRules: true,
-      assignments: {
+academicsRouter.get(
+  '/workload/overview',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const departmentId = parseQueryId(req.query.departmentId);
+      const academicTermId = parseQueryId(req.query.academicTermId);
+
+      const [departments, academicTerms] = await Promise.all([
+        prisma.department.findMany({ orderBy: { code: 'asc' } }),
+        prisma.academicTerm.findMany({ orderBy: { createdAt: 'desc' } }),
+      ]);
+
+      const selectedDept = departmentId
+        ? departments.find((d) => d.id === departmentId) ?? null
+        : null;
+      if (departmentId && !selectedDept) {
+        return res.status(404).json({
+          error: { code: 'NOT_FOUND', message: `Department '${departmentId}' was not found.` },
+        });
+      }
+
+      const selectedTerm = academicTermId
+        ? academicTerms.find((t) => t.id === academicTermId) ?? null
+        : null;
+      if (academicTermId && !selectedTerm) {
+        return res.status(404).json({
+          error: { code: 'NOT_FOUND', message: `Academic term '${academicTermId}' was not found.` },
+        });
+      }
+
+      const facultyList = await prisma.faculty.findMany({
+        where: {
+          ...(departmentId ? { departmentId } : {}),
+        },
         include: {
-          subjectOffering: {
-            include: { subject: true, section: true },
+          user: { select: { displayName: true, institutionalEmail: true } },
+          department: { select: { id: true, code: true, name: true } },
+          workloadRules: {
+            where: { ...(academicTermId ? { academicTermId } : {}) },
+          },
+          availability: {
+            where: { ...(academicTermId ? { academicTermId } : {}) },
+            orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+          },
+          assignments: {
+            where: {
+              status: 'ACTIVE',
+              ...(academicTermId ? { subjectOffering: { academicTermId } } : {}),
+            },
+            include: {
+              subjectOffering: {
+                include: {
+                  subject: { select: { subjectCode: true, name: true } },
+                  section: { select: { sectionCode: true } },
+                },
+              },
+            },
+          },
+          sessions: {
+            where: {
+              timetableVersion: {
+                status: 'PUBLISHED',
+                ...(academicTermId ? { timetable: { academicTermId } } : {}),
+              },
+            },
+            include: {
+              subjectOffering: { select: { requiresLab: true } },
+            },
           },
         },
-      },
-      sessions: {
-        include: {
-          subjectOffering: { include: { subject: true } },
-          room: true,
+        orderBy: [{ user: { displayName: 'asc' } }],
+      });
+
+      const dayNumberMap: Record<number, 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI'> = {
+        1: 'MON',
+        2: 'TUE',
+        3: 'WED',
+        4: 'THU',
+        5: 'FRI',
+      };
+
+      const facultyWorkloads = facultyList.map((f) => {
+        const rule = f.workloadRules[0] ?? null;
+        const hasWorkloadRule = rule !== null;
+        const maxWeeklyHours = rule?.maxPeriodsPerWeek ?? null;
+        const maxDailyHours = rule?.maxPeriodsPerDay ?? null;
+
+        const assignedCourses = f.assignments.map((a) => ({
+          subjectCode: a.subjectOffering.subject.subjectCode,
+          subjectName: a.subjectOffering.subject.name,
+          sectionCode: a.subjectOffering.section.sectionCode,
+          requiredPeriodsPerWeek: a.subjectOffering.requiredPeriodsPerWeek,
+        }));
+
+        const assignedWeeklyHours =
+          Math.round(
+            assignedCourses.reduce((sum, c) => sum + c.requiredPeriodsPerWeek, 0) * 10
+          ) / 10;
+
+        const dailyHours = { MON: 0, TUE: 0, WED: 0, THU: 0, FRI: 0 };
+        let theoryHours = 0;
+        let labHours = 0;
+
+        for (const s of f.sessions) {
+          const dayName = dayNumberMap[s.dayOfWeek];
+          const hours = s.durationPeriods || 1;
+          if (dayName) {
+            dailyHours[dayName] += hours;
+          }
+          if (s.sessionKind === 'LAB' || s.subjectOffering?.requiresLab) {
+            labHours += hours;
+          } else {
+            theoryHours += hours;
+          }
+        }
+
+        const scheduledWeeklyHours = theoryHours + labHours;
+        const peakDailyHours = Math.max(...Object.values(dailyHours));
+        const remainingCapacityHours =
+          maxWeeklyHours !== null
+            ? Math.round((maxWeeklyHours - assignedWeeklyHours) * 10) / 10
+            : null;
+        const allocationDiscrepancyHours =
+          Math.round((scheduledWeeklyHours - assignedWeeklyHours) * 10) / 10;
+        const utilizationPct =
+          maxWeeklyHours !== null && maxWeeklyHours > 0
+            ? Math.round((assignedWeeklyHours / maxWeeklyHours) * 100)
+            : null;
+
+        let workloadStatus: 'OPTIMAL' | 'OVERLOAD' | 'UNDERLOAD' | 'STANDBY' | 'UNCONFIGURED' =
+          'UNCONFIGURED';
+        if (!hasWorkloadRule || maxWeeklyHours === null) {
+          workloadStatus = 'UNCONFIGURED';
+        } else {
+          const isWeeklyOverload = assignedWeeklyHours > maxWeeklyHours;
+          const isDailyOverload = maxDailyHours !== null && peakDailyHours > maxDailyHours;
+          if (isWeeklyOverload || isDailyOverload) {
+            workloadStatus = 'OVERLOAD';
+          } else if (assignedWeeklyHours === 0) {
+            workloadStatus = 'STANDBY';
+          } else if (assignedWeeklyHours < Math.max(1, Math.round(maxWeeklyHours * 0.6))) {
+            workloadStatus = 'UNDERLOAD';
+          } else {
+            workloadStatus = 'OPTIMAL';
+          }
+        }
+
+        return {
+          facultyId: f.id,
+          name: f.user.displayName,
+          email: f.user.institutionalEmail,
+          employeeCode: f.employeeCode,
+          designation: f.designation,
+          departmentId: f.department.id,
+          departmentName: f.department.name,
+          cabinLocation: f.cabinLocation,
+          status: f.status,
+          hasWorkloadRule,
+          maxWeeklyHours,
+          maxDailyHours,
+          assignedWeeklyHours,
+          scheduledWeeklyHours,
+          remainingCapacityHours,
+          allocationDiscrepancyHours,
+          theoryHours,
+          labHours,
+          dailyHours,
+          peakDailyHours,
+          utilizationPct,
+          workloadStatus,
+          assignedCourses,
+          availabilitySlots: f.availability.map((av) => ({
+            id: av.id,
+            availabilityType: av.availabilityType,
+            dayOfWeek: av.dayOfWeek,
+            startTime: av.startTime,
+            endTime: av.endTime,
+            reason: av.reason,
+          })),
+        };
+      });
+
+      const totalFaculty = facultyWorkloads.length;
+      const activeFacultyCount = facultyWorkloads.filter((f) => f.status === 'ACTIVE').length;
+      const configuredRulesCount = facultyWorkloads.filter((f) => f.hasWorkloadRule).length;
+      const totalAssignedHours =
+        Math.round(facultyWorkloads.reduce((acc, f) => acc + f.assignedWeeklyHours, 0) * 10) / 10;
+      const totalScheduledHours =
+        Math.round(facultyWorkloads.reduce((acc, f) => acc + f.scheduledWeeklyHours, 0) * 10) / 10;
+
+      const avgAssignedHoursPerWeek =
+        totalFaculty > 0 ? Math.round((totalAssignedHours / totalFaculty) * 10) / 10 : null;
+      const avgScheduledHoursPerWeek =
+        totalFaculty > 0 ? Math.round((totalScheduledHours / totalFaculty) * 10) / 10 : null;
+
+      const balancedCount = facultyWorkloads.filter((f) => f.workloadStatus === 'OPTIMAL').length;
+      const overloadCount = facultyWorkloads.filter((f) => f.workloadStatus === 'OVERLOAD').length;
+      const underloadCount = facultyWorkloads.filter(
+        (f) => f.workloadStatus === 'UNDERLOAD' || f.workloadStatus === 'STANDBY'
+      ).length;
+      const unconfiguredCount = facultyWorkloads.filter(
+        (f) => f.workloadStatus === 'UNCONFIGURED'
+      ).length;
+      const compliantPct =
+        configuredRulesCount > 0
+          ? Math.round((balancedCount / configuredRulesCount) * 100)
+          : null;
+
+      const payload: WorkloadOverview = {
+        hasData: totalFaculty > 0,
+        isDemoData:
+          departments.some((d) => d.isDemo) || academicTerms.some((t) => t.isDemo),
+        appliedFilters: { departmentId, academicTermId },
+        availableFilters: {
+          departments: departments.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+          academicTerms: academicTerms.map((t) => ({
+            id: t.id,
+            academicYearLabel: t.academicYearLabel,
+            termLabel: t.termLabel,
+          })),
         },
-      },
-    },
-  });
+        scopeLabel: {
+          department: selectedDept ? `${selectedDept.code} — ${selectedDept.name}` : 'All Departments',
+          academicTerm: selectedTerm
+            ? `${selectedTerm.academicYearLabel} (${selectedTerm.termLabel})`
+            : 'All Academic Terms',
+        },
+        metrics: {
+          totalFaculty,
+          activeFacultyCount,
+          configuredRulesCount,
+          avgAssignedHoursPerWeek,
+          avgScheduledHoursPerWeek,
+          totalAssignedHours,
+          totalScheduledHours,
+          balancedCount,
+          overloadCount,
+          underloadCount,
+          unconfiguredCount,
+          compliantPct,
+        },
+        faculty: facultyWorkloads,
+        schemaLimitations: [
+          'Actual classroom attendance is not stored in the schema; scheduled hours reflect published TimetableSession records while assigned hours reflect FacultyAssignment and SubjectOffering.',
+          'Faculty without a matching FacultyWorkloadRule are marked UNCONFIGURED rather than assuming default limits.',
+        ],
+      };
 
-  // Calculate day-wise and weekly totals for each faculty
-  const days = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
-  const dayNumberMap: Record<number, string> = { 1: 'MON', 2: 'TUE', 3: 'WED', 4: 'THU', 5: 'FRI' };
-
-  const facultyWorkloads = facultyList.map((f) => {
-    const rule = f.workloadRules[0];
-    const maxWeekly = rule?.maxPeriodsPerWeek || 18;
-    const maxDaily = rule?.maxPeriodsPerDay || 4;
-
-    // Daily hours calculation from actual timetable sessions
-    const dailyHours: Record<string, number> = { MON: 0, TUE: 0, WED: 0, THU: 0, FRI: 0 };
-    let theoryHours = 0;
-    let labHours = 0;
-
-    f.sessions.forEach((s) => {
-      const dayName = dayNumberMap[s.dayOfWeek] || 'MON';
-      const hours = s.durationPeriods || 1;
-      dailyHours[dayName] = (dailyHours[dayName] || 0) + hours;
-
-      if (s.sessionKind === 'LAB' || s.subjectOffering?.requiresLab) {
-        labHours += hours;
-      } else {
-        theoryHours += hours;
-      }
-    });
-
-    const totalWeeklyHours = theoryHours + labHours;
-    const utilizationPct = Math.round((totalWeeklyHours / maxWeekly) * 100);
-
-    // Check daily peak to identify single-day overloading
-    const peakDailyHours = Math.max(...Object.values(dailyHours));
-    const isDailyOverload = peakDailyHours > maxDaily;
-    const isWeeklyOverload = totalWeeklyHours > maxWeekly;
-
-    let status: 'OPTIMAL' | 'OVERLOAD' | 'UNDERLOAD' | 'STANDBY' = 'OPTIMAL';
-    if (isWeeklyOverload || isDailyOverload) {
-      status = 'OVERLOAD';
-    } else if (totalWeeklyHours > 0 && totalWeeklyHours < 12) {
-      status = 'UNDERLOAD';
-    } else if (totalWeeklyHours === 0) {
-      status = 'STANDBY';
+      return res.json({ data: payload });
+    } catch (err) {
+      return next(err);
     }
-
-    // Active teaching courses
-    const assignedCourses = Array.from(
-      new Set(f.assignments.map((a) => `${a.subjectOffering.subject.subjectCode} - ${a.subjectOffering.subject.name}`))
-    );
-
-    return {
-      facultyId: f.id,
-      name: f.user.displayName,
-      email: f.user.institutionalEmail,
-      employeeCode: f.employeeCode || 'EMP-CSE',
-      designation: f.designation || 'Faculty Member',
-      department: f.department.name,
-      cabinLocation: f.cabinLocation || 'PJ-Block',
-      maxWeeklyHours: maxWeekly,
-      maxDailyHours: maxDaily,
-      weeklyHours: totalWeeklyHours,
-      theoryHours,
-      labHours,
-      dailyHours,
-      peakDailyHours,
-      utilizationPct,
-      status,
-      assignedCourses,
-      isProxyEligible: f.employeeCode === 'EMP-CSE-017' || f.user.displayName.includes('Malathi'),
-    };
-  });
-
-  // Calculate summary metrics
-  const totalFaculty = facultyWorkloads.length;
-  const totalWeeklyLoad = facultyWorkloads.reduce((acc, f) => acc + f.weeklyHours, 0);
-  const avgLoad = totalFaculty > 0 ? (totalWeeklyLoad / totalFaculty).toFixed(1) : '0';
-  const overloadCount = facultyWorkloads.filter((f) => f.status === 'OVERLOAD').length;
-  const underloadCount = facultyWorkloads.filter((f) => f.status === 'UNDERLOAD').length;
-  const balancedCount = facultyWorkloads.filter((f) => f.status === 'OPTIMAL').length;
-  const compliantPct = totalFaculty > 0 ? Math.round((balancedCount / totalFaculty) * 100) : 100;
-
-  return res.json({
-    data: {
-      academicTerm: 'AY 2024–25 (Odd Semester)',
-      department: 'Department of Computer Science & Engineering',
-      metrics: {
-        totalFaculty,
-        avgLoadHoursPerWeek: Number(avgLoad),
-        totalInstructionalHours: totalWeeklyLoad,
-        balancedCount,
-        overloadCount,
-        underloadCount,
-        compliantPct,
-        regulatoryStandard: 'AICTE Workload Ceiling: 16.0h - 18.0h / week',
-      },
-      faculty: facultyWorkloads,
-    },
-  });
-});
+  }
+);
 
 // ============================================================================
 // 2. Room & Smart Lab Management (/api/v1/rooms/overview)
 // ============================================================================
-academicsRouter.get('/rooms/overview', async (req: Request, res: Response) => {
-  const rooms = await prisma.room.findMany({
-    include: {
-      roomFeatures: { include: { feature: true } },
-      sessions: {
-        include: {
-          subjectOffering: { include: { subject: true } },
-          faculty: { include: { user: true } },
-        },
-      },
-    },
-    orderBy: { roomCode: 'asc' },
-  });
+academicsRouter.get('/rooms/overview', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const departmentId = parseQueryId(req.query.departmentId);
+    const academicTermId = parseQueryId(req.query.academicTermId);
 
-  const totalWeeklySlots = 35; // 7 periods * 5 working days
+    const [departments, academicTerms] = await Promise.all([
+      prisma.department.findMany({ orderBy: { code: 'asc' } }),
+      prisma.academicTerm.findMany({ orderBy: { createdAt: 'desc' } }),
+    ]);
 
-  const roomInventory = rooms.map((r) => {
-    const allocatedPeriods = r.sessions.reduce((acc, s) => acc + (s.durationPeriods || 1), 0);
-    const utilizationPct = Math.min(100, Math.round((allocatedPeriods / totalWeeklySlots) * 100));
-
-    // Facilities list
-    const facilities = r.roomFeatures.map((rf) => rf.feature.name);
-    if (facilities.length === 0) {
-      if (r.roomType === 'LAB') {
-        facilities.push('Dual-Core Workstations (32GB)', 'Cadence / Cisco Simulator', 'Gigabit Wired LAN', 'UPS Redundancy');
-      } else if (r.roomType === 'SEMINAR_HALL') {
-        facilities.push('Acoustic PA System', 'Dual 4K Projectors', 'Central Air Conditioning', 'Tiered Amphitheater');
-      } else {
-        facilities.push('Smart Interactive 4K Panel', 'Motorized Screen', 'BMSCE Wi-Fi 6', 'Document Camera');
-      }
+    const selectedDept = departmentId
+      ? departments.find((d) => d.id === departmentId) ?? null
+      : null;
+    if (departmentId && !selectedDept) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: `Department '${departmentId}' was not found.` },
+      });
     }
 
-    // Schedule breakdown by day
-    const daySchedule: Record<string, number> = { MON: 0, TUE: 0, WED: 0, THU: 0, FRI: 0 };
-    const dayMap: Record<number, string> = { 1: 'MON', 2: 'TUE', 3: 'WED', 4: 'THU', 5: 'FRI' };
-    r.sessions.forEach((s) => {
-      const day = dayMap[s.dayOfWeek] || 'MON';
-      daySchedule[day] = (daySchedule[day] || 0) + (s.durationPeriods || 1);
+    const selectedTerm = academicTermId
+      ? academicTerms.find((t) => t.id === academicTermId) ?? null
+      : null;
+    if (academicTermId && !selectedTerm) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: `Academic term '${academicTermId}' was not found.` },
+      });
+    }
+
+    const [rooms, bellSchedules] = await Promise.all([
+      prisma.room.findMany({
+        where: { ...(departmentId ? { departmentId } : {}) },
+        include: {
+          department: { select: { id: true, name: true } },
+          roomFeatures: { include: { feature: true } },
+          availability: {
+            where: { ...(academicTermId ? { academicTermId } : {}) },
+            orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+          },
+          sessions: {
+            where: {
+              timetableVersion: {
+                status: 'PUBLISHED',
+                ...(academicTermId ? { timetable: { academicTermId } } : {}),
+              },
+            },
+            include: {
+              section: { select: { sectionCode: true, studentCount: true } },
+              subjectOffering: { select: { expectedStudentCount: true } },
+            },
+          },
+        },
+        orderBy: { roomCode: 'asc' },
+      }),
+      prisma.bellSchedule.findMany({
+        where: { ...(academicTermId ? { academicTermId } : {}) },
+        include: {
+          periods: { where: { periodType: 'CLASS' } },
+        },
+        orderBy: [{ isDefault: 'desc' }, { effectiveFrom: 'desc' }],
+        take: 1,
+      }),
+    ]);
+
+    const classPeriodsCount = bellSchedules[0]?.periods.length ?? 0;
+    const weeklyAvailablePeriods = classPeriodsCount > 0 ? classPeriodsCount * 5 : null;
+
+    const dayMap: Record<number, 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI'> = {
+      1: 'MON',
+      2: 'TUE',
+      3: 'WED',
+      4: 'THU',
+      5: 'FRI',
+    };
+
+    const roomInventory = rooms.map((r) => {
+      const allocatedSessionsCount = r.sessions.length;
+      const allocatedWeeklyHours = r.sessions.reduce(
+        (acc, s) => acc + (s.durationPeriods || 1),
+        0
+      );
+      const utilizationPct =
+        weeklyAvailablePeriods !== null && weeklyAvailablePeriods > 0
+          ? Math.min(100, Math.round((allocatedWeeklyHours / weeklyAvailablePeriods) * 100))
+          : null;
+      const freeWeeklyPeriods =
+        weeklyAvailablePeriods !== null
+          ? Math.max(0, weeklyAvailablePeriods - allocatedWeeklyHours)
+          : null;
+
+      const daySchedule = { MON: 0, TUE: 0, WED: 0, THU: 0, FRI: 0 };
+      const byDay = new Map<number, Array<{ startTime: string; endTime: string }>>();
+      const capacityMismatches: Array<{
+        sectionCode: string;
+        expectedStudentCount: number;
+        roomCapacity: number;
+      }> = [];
+      const seenMismatchSections = new Set<string>();
+
+      for (const s of r.sessions) {
+        const dayName = dayMap[s.dayOfWeek];
+        if (dayName) {
+          daySchedule[dayName] += s.durationPeriods || 1;
+        }
+        const dayList = byDay.get(s.dayOfWeek) ?? [];
+        dayList.push({ startTime: s.startTime, endTime: s.endTime });
+        byDay.set(s.dayOfWeek, dayList);
+
+        const expected = s.subjectOffering?.expectedStudentCount ?? s.section.studentCount;
+        if (expected > r.capacity && !seenMismatchSections.has(s.section.sectionCode)) {
+          seenMismatchSections.add(s.section.sectionCode);
+          capacityMismatches.push({
+            sectionCode: s.section.sectionCode,
+            expectedStudentCount: expected,
+            roomCapacity: r.capacity,
+          });
+        }
+      }
+
+      let collisionCount = 0;
+      for (const list of byDay.values()) {
+        const sorted = [...list].sort((a, b) => a.startTime.localeCompare(b.startTime));
+        for (let i = 1; i < sorted.length; i += 1) {
+          if (sorted[i].startTime < sorted[i - 1].endTime) {
+            collisionCount += 1;
+          }
+        }
+      }
+
+      const hasUnavailableSlot = r.availability.some(
+        (a) => a.availabilityType === 'UNAVAILABLE'
+      );
+      let currentStatus: 'IN_USE' | 'AVAILABLE' | 'UNAVAILABLE' = 'AVAILABLE';
+      if (!r.isActive || hasUnavailableSlot) {
+        currentStatus = 'UNAVAILABLE';
+      } else if (allocatedSessionsCount > 0) {
+        currentStatus = 'IN_USE';
+      }
+
+      return {
+        roomId: r.id,
+        roomCode: r.roomCode,
+        name: r.name,
+        roomType: r.roomType,
+        capacity: r.capacity,
+        departmentId: r.department?.id ?? null,
+        departmentName: r.department?.name ?? null,
+        location: r.locationLabel,
+        isActive: r.isActive,
+        isLab: r.roomType === 'LAB',
+        facilities: r.roomFeatures.map((rf) => rf.feature.name),
+        availabilityEntries: r.availability.map((av) => ({
+          id: av.id,
+          availabilityType: av.availabilityType,
+          dayOfWeek: av.dayOfWeek,
+          startTime: av.startTime,
+          endTime: av.endTime,
+          reason: av.reason,
+        })),
+        allocatedSessionsCount,
+        allocatedWeeklyHours,
+        freeWeeklyPeriods,
+        utilizationPct,
+        daySchedule,
+        currentStatus,
+        collisionCount,
+        capacityMismatches,
+        collisionStatus: collisionCount > 0 ? ('COLLISION_ALERT' as const) : ('CLEAN' as const),
+      };
     });
 
-    // Determine current live occupancy status
-    let currentStatus: 'IN_USE' | 'AVAILABLE' | 'MAINTENANCE' = 'AVAILABLE';
-    let currentCohort = 'No session scheduled (Buffer available)';
-    let currentFaculty = '—';
+    const totalRooms = roomInventory.length;
+    const activeRoomsCount = roomInventory.filter((r) => r.isActive).length;
+    const labCount = roomInventory.filter((r) => r.isLab).length;
+    const classroomCount = roomInventory.filter((r) => r.roomType === 'CLASSROOM').length;
+    const otherRoomsCount = totalRooms - labCount - classroomCount;
+    const roomsWithSessionsCount = roomInventory.filter(
+      (r) => r.allocatedSessionsCount > 0
+    ).length;
+    const unallocatedRoomsCount = totalRooms - roomsWithSessionsCount;
+    const collisionCount = roomInventory.reduce((acc, r) => acc + r.collisionCount, 0);
+    const capacityMismatchCount = roomInventory.reduce(
+      (acc, r) => acc + r.capacityMismatches.length,
+      0
+    );
 
-    if (r.roomCode === 'PJ-301') {
-      currentStatus = 'IN_USE';
-      currentCohort = '22CSSPCDAA (5th Sem CSE-B)';
-      currentFaculty = 'Dr. A. Ramanathan';
-    } else if (r.roomCode === 'PJ-302') {
-      currentStatus = 'IN_USE';
-      currentCohort = '22CSSPCDBMS (5th Sem CSE-B)';
-      currentFaculty = 'Prof. Sneha K.';
-    } else if (r.roomCode === 'PJ-304') {
-      currentStatus = 'IN_USE';
-      currentCohort = '22CSSPCOPS (5th Sem CSE-B)';
-      currentFaculty = 'Prof. Vikram Sen';
-    } else if (r.roomCode === 'CS-L1') {
-      currentStatus = 'IN_USE';
-      currentCohort = 'DAA Lab Practicum (Batch B1/B2)';
-      currentFaculty = 'Dr. A. Ramanathan & Asst';
-    } else if (r.roomCode === 'CS-L3') {
-      currentStatus = 'MAINTENANCE';
-      currentCohort = 'HPC Network Switch Firmware Diagnostics';
-      currentFaculty = 'Systems Engineering Staff';
-    }
+    const utilValues = roomInventory
+      .map((r) => r.utilizationPct)
+      .filter((v): v is number => v !== null);
+    const avgUtilizationPct =
+      utilValues.length > 0
+        ? Math.round(utilValues.reduce((a, b) => a + b, 0) / utilValues.length)
+        : null;
 
-    return {
-      roomId: r.id,
-      roomCode: r.roomCode,
-      name: r.name,
-      roomType: r.roomType,
-      capacity: r.capacity,
-      location: r.locationLabel || 'Platinum Jubilee Academic Block',
-      facilities,
-      allocatedWeeklyHours: allocatedPeriods,
-      utilizationPct,
-      daySchedule,
-      currentStatus,
-      currentCohort,
-      currentFaculty,
-      collisionStatus: 'CLEAN',
-      isLab: r.roomType === 'LAB',
-    };
-  });
-
-  const totalRooms = roomInventory.length;
-  const labCount = roomInventory.filter((r) => r.isLab).length;
-  const classroomCount = totalRooms - labCount;
-  const avgUtilization = totalRooms > 0
-    ? Math.round(roomInventory.reduce((acc, r) => acc + r.utilizationPct, 0) / totalRooms)
-    : 0;
-  const availableNow = roomInventory.filter((r) => r.currentStatus === 'AVAILABLE').length;
-
-  return res.json({
-    data: {
-      campus: 'B.M.S. College of Engineering • Main Campus',
-      cluster: 'Autonomous Academic Complex 02',
+    const payload: RoomsOverview = {
+      hasData: totalRooms > 0,
+      isDemoData:
+        rooms.some((r) => r.isDemo) || academicTerms.some((t) => t.isDemo),
+      appliedFilters: { departmentId, academicTermId },
+      availableFilters: {
+        departments: departments.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+        academicTerms: academicTerms.map((t) => ({
+          id: t.id,
+          academicYearLabel: t.academicYearLabel,
+          termLabel: t.termLabel,
+        })),
+      },
+      scopeLabel: {
+        department: selectedDept ? `${selectedDept.code} — ${selectedDept.name}` : 'All Departments',
+        academicTerm: selectedTerm
+          ? `${selectedTerm.academicYearLabel} (${selectedTerm.termLabel})`
+          : 'All Academic Terms',
+      },
+      weeklyAvailablePeriods,
       metrics: {
         totalRooms,
+        activeRoomsCount,
         classroomCount,
         labCount,
-        avgUtilizationPct: avgUtilization,
-        availableNow,
-        inUseNow: totalRooms - availableNow,
-        zeroCollisionsConfirmed: true,
+        otherRoomsCount,
+        avgUtilizationPct,
+        roomsWithSessionsCount,
+        unallocatedRoomsCount,
+        collisionCount,
+        capacityMismatchCount,
       },
       rooms: roomInventory,
-    },
-  });
+      schemaLimitations: [
+        'Room utilization percentages require a configured BellSchedule with CLASS TimePeriod rows; when absent, utilizationPct and freeWeeklyPeriods are null.',
+        'Equipment features reflect RoomFeature records only; rooms without linked features return an empty list.',
+      ],
+    };
+
+    return res.json({ data: payload });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 // ============================================================================

@@ -3,45 +3,45 @@
 Project target: 10 December 2026
 
 Current phase: PHASE 3 (Academic Structure Management — Complete)
-Phase status: TASK-302 COMPLETE (`TASK-303` / next approved task pending)
+Phase status: TASK-303 COMPLETE (Phase 3 complete; Phase 5 `TASK-501` next upon approval)
 
 Last completed task:
-TASK-302 — HOD and Academic Dashboards — Database Integration (`packages/contracts/src/dashboard.ts`, `packages/contracts/src/index.ts`, `apps/api/src/modules/dashboard/dashboard.router.ts`, `apps/web/src/features/dashboard/HODDashboard.tsx`).
+TASK-303 — Faculty Workload and Room Management — Database Integration (`packages/contracts/src/academics.ts`, `apps/api/src/modules/academics/academics.router.ts`, `apps/web/src/features/workload/FacultyWorkload.tsx`, `apps/web/src/features/rooms/RoomManagement.tsx`).
 
 Currently executing:
-None — TASK-302 complete. Awaiting user approval for `TASK-303` or next task.
+None — TASK-303 complete. Awaiting user approval for Phase 5 (`TASK-501`).
 
 Last verified result:
 - `npm run build --workspace=packages/contracts`: PASS (`tsc`, Exit 0)
 - `npx tsc --noEmit -p apps/web/tsconfig.json` & `npx tsc --noEmit -p apps/api/tsconfig.json`: PASS (Exit 0)
 - `npm run build --workspace=apps/api`: PASS (`tsc`, Exit 0)
 - `npm run build --workspace=apps/web`: PASS (`tsc && vite build`, 1646 modules, Exit 0)
-- Isolated disposable SQLite Express HTTP integration test (`test_hod_dashboard_302.ts`, 14 scenarios): PASS (`ALL_SCOPE: 200 depts= 3 sections= 4 coveragePct= 25`, `CSE_ODD: 200 sections= 2 coveragePct= 50 avgMax= 18`, `EMPTY_MECH: 200 hasData= false coveragePct= null`, `INVALID_SCOPE: dept404= 404 mismatch404= 404`, `DB_ERROR: status= 500 code= INTERNAL_SERVER_ERROR`, `ALL_302_ASSERTIONS_PASSED`, Exit 0).
+- Isolated disposable SQLite Express HTTP integration test (`test_workload_rooms_303.ts`): PASS (`WORKLOAD_CSE_ODD: 200 total= 2 overload= 1 unconf= 1`, `ROOMS_CSE_ODD: 200 weeklyPeriods= 30 collisions= 1 mismatches= 1`, `EMPTY_AND_NULL: mechHasData=false evenWeeklyPeriods= null`, `ERROR_HANDLING: w404= 404 r404= 404 w500= 500 r500= 500`, `ALL_303_ASSERTIONS_PASSED`, Exit 0).
 
-Files created or modified in TASK-302:
-- `packages/contracts/src/dashboard.ts` (created — `HodDashboardOverviewSchema` and supporting Zod schemas/types)
-- `packages/contracts/src/index.ts` (modified — exported `./dashboard.js`)
-- `apps/api/src/modules/dashboard/dashboard.router.ts` (modified — replaced hardcoded `/hod/dashboard-overview` data with scoped Prisma queries across `Department`, `Program`, `AcademicTerm`, `Section`, `Batch`, `Student`, `Subject`, `SubjectOffering`, `Faculty`, `FacultyAssignment`, `FacultyAvailability`, `FacultyWorkloadRule`, `Room`, `Timetable`, `TimetableVersion`, `TimetableSession`, `ScheduleException`, `AcademicCalendarEvent`, `Disruption`, and `AuditLog`)
-- `apps/web/src/features/dashboard/HODDashboard.tsx` (modified — wired to `/api/v1/hod/dashboard-overview` with `departmentId`/`programId`/`academicTermId` scope filters, local `zod` validator, `QueryStateCard` loading/error/empty states, functional room filter tabs, and no hardcoded fallbacks)
+Files created or modified in TASK-303:
+- `packages/contracts/src/academics.ts` (modified — added `WorkloadOverviewSchema`, `RoomsOverviewSchema`, and supporting Zod schemas/types)
+- `apps/api/src/modules/academics/academics.router.ts` (modified — replaced hardcoded `/workload/overview` and `/rooms/overview` with scoped Prisma queries, published-only `TimetableSession` aggregations, `FacultyAvailability` / `FacultyWorkloadRule` / `RoomFeature` / `RoomAvailability` / `BellSchedule` queries, and real collision + capacity mismatch checks)
+- `apps/web/src/features/workload/FacultyWorkload.tsx` (modified — wired to `/api/v1/workload/overview` with department/term filters, local `zod` validator, `QueryStateCard`, assigned vs. scheduled hours, `UNCONFIGURED` rule handling, and `FacultyAvailability` display)
+- `apps/web/src/features/rooms/RoomManagement.tsx` (modified — wired to `/api/v1/rooms/overview` with department/term filters, local `zod` validator, `QueryStateCard`, real `RoomFeature` / `RoomAvailability`, collision & capacity mismatch alerts, and `null` handling when no `BellSchedule` exists)
 - `docs/development/CURRENT_PROGRESS.md` (updated)
 - `docs/development/PHASE_LOG.md` (updated)
 - `docs/development/TASK_BACKLOG.md` (updated)
 
 Known blockers / limitations:
-- NEP audit percentages and real-time room maintenance telemetry are not stored in `prisma/schema.prisma`; room status (`IN_USE` vs `FREE`) reflects whether each active room has scheduled sessions in published timetable versions within the selected scope.
-- Student enrollment counts reflect rows in `students`; configured section seats reflect `Section.studentCount`.
-- Browser UI rendering was not executed against a live local dev server in this task; frontend integration was verified via `tsc` + `vite build` and contract schema validation against the Express API integration test.
+- Actual classroom attendance is not stored in `prisma/schema.prisma`; scheduled faculty hours reflect published `TimetableSession` records.
+- Room utilization percentages require a configured `BellSchedule` with `CLASS` `TimePeriod` rows; when absent, `utilizationPct` and `freeWeeklyPeriods` are `null`.
+- Browser UI rendering was not executed against a live local dev server in this task; frontend integration was verified via `tsc` + `vite build` and contract schema validation against the Express API test.
 - Existing local and Supabase databases were not modified.
 
 Next exact action:
-Await user approval to proceed with `TASK-303` or the next prioritized task.
+Await user approval to proceed with Phase 5 (`TASK-501`).
 
 Next phase allowed:
 Yes (upon explicit user approval).
 
 Important instructions for the next model:
 - Read `docs/development/CURRENT_PROGRESS.md`, `PHASE_LOG.md`, and `TASK_BACKLOG.md` first.
-- `TASK-302` is complete; do not start `TASK-303` without explicit user request.
+- Phase 3 (`TASK-301`, `TASK-302`, `TASK-303`) is complete.
 
 Last updated:
-2026-11-27 01:14 IST
+2026-11-27 01:58 IST

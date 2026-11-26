@@ -153,10 +153,11 @@
 ## Phase 3 — Academic Structure Management
 
 - **Start date:** 2026-11-26
-- **Status:** Complete (`TASK-301`, `TASK-302` complete)
+- **Status:** Complete (`TASK-301`, `TASK-302`, `TASK-303` complete)
 - **Tasks completed:**
   - `TASK-301` — Connected `GET /api/v1/nep-scheme/overview` (`apps/api/src/modules/academics/academics.router.ts`) and `NepScheme` (`apps/web/src/features/nep/NepScheme.tsx`) to Prisma `Department`, `Program`, `AcademicTerm`, `Section`, `Subject`, and `SubjectOffering` records with `departmentId`/`programId`/`academicTermId` scope filtering, subject deduplication across offerings, and `NepSchemeOverviewSchema` in `packages/contracts/src/academics.ts`.
   - `TASK-302` — Connected `GET /api/v1/hod/dashboard-overview` (`apps/api/src/modules/dashboard/dashboard.router.ts`) and `HODDashboard` (`apps/web/src/features/dashboard/HODDashboard.tsx`) to live Prisma aggregations across academic structure, faculty/workload, published timetable coverage, room allocation matrix, calendar events, schedule exceptions, disruptions, and audit logs, with `HodDashboardOverviewSchema` in `packages/contracts/src/dashboard.ts`.
+  - `TASK-303` — Connected `GET /api/v1/workload/overview` and `GET /api/v1/rooms/overview` (`apps/api/src/modules/academics/academics.router.ts`) plus `FacultyWorkload` (`apps/web/src/features/workload/FacultyWorkload.tsx`) and `RoomManagement` (`apps/web/src/features/rooms/RoomManagement.tsx`) to live Prisma queries (`Faculty`, `FacultyAssignment`, `FacultyAvailability`, `FacultyWorkloadRule`, `Room`, `RoomFeature`, `RoomAvailability`, `BellSchedule`, `TimePeriod`, and published `TimetableSession`s), removing all fabricated rules, features, and occupancy overrides.
 - **Files changed:**
   - `packages/contracts/src/academics.ts` (modified)
   - `packages/contracts/src/dashboard.ts` (created)
@@ -165,10 +166,12 @@
   - `apps/api/src/modules/dashboard/dashboard.router.ts` (modified)
   - `apps/web/src/features/nep/NepScheme.tsx` (modified)
   - `apps/web/src/features/dashboard/HODDashboard.tsx` (modified)
+  - `apps/web/src/features/workload/FacultyWorkload.tsx` (modified)
+  - `apps/web/src/features/rooms/RoomManagement.tsx` (modified)
 - **Commands executed & test results:**
   - `npm run build --workspace=packages/contracts`, `npx tsc --noEmit -p apps/web/tsconfig.json`, `npx tsc --noEmit -p apps/api/tsconfig.json`, `npm run build --workspace=apps/api`, `npm run build --workspace=apps/web`: ALL PASS (Exit 0)
-  - Disposable SQLite Express HTTP integration tests (`test_nep_301.ts` and `test_hod_dashboard_302.ts`): ALL PASS (Exit 0)
+  - Disposable SQLite Express HTTP integration tests (`test_nep_301.ts`, `test_hod_dashboard_302.ts`, `test_workload_rooms_303.ts`): ALL PASS (Exit 0)
 - **Known limitations:**
-  - `Subject` and `SubjectOffering` in `prisma/schema.prisma` do not store `credits`, `L:T:P` ratios, or NEP vertical codes (`PCC`/`PEC`/`OEC`); NEP audit percentages and real-time room maintenance telemetry are also not stored in the schema.
+  - `Subject` and `SubjectOffering` in `prisma/schema.prisma` do not store `credits`, `L:T:P` ratios, or NEP vertical codes (`PCC`/`PEC`/`OEC`); NEP audit percentages, attendance, and real-time room telemetry are not in the schema.
   - Existing local and Supabase databases were not modified.
-- **Remaining tasks:** `TASK-303` / Phase 5 through Phase 10.
+- **Remaining tasks:** Phase 5 (`TASK-501`) through Phase 10 (`TASK-1001`).
