@@ -20,7 +20,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        value: https://bmsce-smart-academic.vercel.app
+        value: https://campusflow-sepia-seven.vercel.app,https://bmsce-smart-academic.vercel.app
       - key: ALLOW_DEMO_AUTH
         value: "true"
       - key: IS_DEMO_ENV

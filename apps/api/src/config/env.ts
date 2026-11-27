@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import { buildCorsAllowlist } from './cors.js';
 
 dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 dotenv.config();
@@ -24,22 +25,15 @@ if (isProduction) {
   }
 }
 
-function parseCorsOrigin(raw: string | undefined, isProd: boolean): string | string[] {
-  if (!raw) {
-    return isProd ? 'https://academic.bmsce.ac.in' : 'http://localhost:5173';
-  }
-  if (raw.includes(',')) {
-    return raw.split(',').map((s) => s.trim()).filter(Boolean);
-  }
-  return raw.trim();
-}
+const corsAllowlist = buildCorsAllowlist(process.env);
 
 export const config = {
   port: parseInt(process.env.PORT || '3001', 10),
   nodeEnv,
   isProduction,
   jwtSecret: rawJwtSecret || defaultSecret,
-  corsOrigin: parseCorsOrigin(process.env.CORS_ORIGIN, isProduction),
+  corsAllowlist,
+  corsOrigins: Array.from(corsAllowlist.explicitOrigins),
   databaseUrl: process.env.DATABASE_URL || 'file:./dev.db',
   // Header bypass stays non-production only. Public demo login may be enabled on free-tier cloud.
   allowDemoAuth: process.env.ALLOW_DEMO_AUTH === 'true',

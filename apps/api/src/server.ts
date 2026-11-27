@@ -4,6 +4,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { Server as SocketIOServer } from 'socket.io';
 import { config } from './config/env.js';
+import { createCorsOriginValidator } from './config/cors.js';
 import { authMiddleware } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { initRedis, closeRedis } from './config/redis.js';
@@ -25,10 +26,12 @@ const server = http.createServer(app);
 // Initialize Redis with fallback
 initRedis();
 
+const corsOriginValidator = createCorsOriginValidator(config.corsAllowlist);
+
 // Setup Socket.IO for realtime communications & updates
 export const io = new SocketIOServer(server, {
   cors: {
-    origin: config.isProduction ? config.corsOrigin : '*',
+    origin: corsOriginValidator,
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -54,7 +57,7 @@ io.on('connection', (socket) => {
 // Middleware with environment-specific CORS protection
 app.use(
   cors({
-    origin: config.isProduction ? config.corsOrigin : '*',
+    origin: corsOriginValidator,
     credentials: true,
   })
 );
