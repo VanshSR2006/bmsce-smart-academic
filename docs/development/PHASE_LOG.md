@@ -175,3 +175,23 @@
   - `Subject` and `SubjectOffering` in `prisma/schema.prisma` do not store `credits`, `L:T:P` ratios, or NEP vertical codes (`PCC`/`PEC`/`OEC`); NEP audit percentages, attendance, and real-time room telemetry are not in the schema.
   - Existing local and Supabase databases were not modified.
 - **Remaining tasks:** Phase 5 (`TASK-501`) through Phase 10 (`TASK-1001`).
+
+---
+
+## Phase 5 — Initial & Dynamic Timetable Generation
+
+- **Start date:** 2026-11-27
+- **Status:** In Progress (`TASK-501` complete; `TASK-502` pending)
+- **Tasks completed:**
+  - `TASK-501` — Completed remaining Solver Database Payload and Studio Integration work (building on `buildOptimizerPayloadFromDb()` originally introduced in `TASK-202B`) and hardened optimizer failure/fallback handling: replaced hardcoded `GET /api/v1/solver/studio-config` with scoped Prisma queries, added `programId` & scope validation, removed misleading `"falling back to mock"` warnings in `callOptimizer()`, classified HTTP `503`/timeout `504`/malformed JSON `502`/invalid schema `502`/empty `502` failures into `FAILED` `OptimizationRun` records without fabricating candidates, wrapped `OptimizationRun` + `OptimizationCandidate` persistence in `prisma.$transaction`, isolated explicit `demoMode` (`DEMO_SIMULATED`, `canPublish: false`, 0 persisted candidates), and wired `apps/web/src/features/solver/SolverStudio.tsx` to distinguish success, failure, and demo states.
+- **Files changed:**
+  - `packages/contracts/src/optimization.ts` (modified)
+  - `apps/api/src/modules/solver/solver.router.ts` (modified)
+  - `apps/web/src/features/solver/SolverStudio.tsx` (modified)
+- **Commands executed & test results:**
+  - `npm run build --workspace=packages/contracts`, `npx tsc --noEmit -p apps/web/tsconfig.json`, `npx tsc --noEmit -p apps/api/tsconfig.json`, `npm run build --workspace=apps/api`, `npm run build --workspace=apps/web`: ALL PASS (Exit 0)
+  - Disposable SQLite Express HTTP integration tests (`test_solver_studio_501.ts` & `test_solver_hardening_501.ts`): ALL PASS (`ALL_501_ASSERTIONS_PASSED`, `ALL_501_HARDENING_ASSERTIONS_PASSED`, Exit 0)
+- **Known limitations:**
+  - `CandidateSession` persistence, `GET /api/v1/solver/candidates/compare`, and `POST /api/v1/solver/publish` remain deferred to `TASK-502`.
+  - Existing local and Supabase databases were not modified.
+- **Remaining tasks:** `TASK-502` in Phase 5 (plus Phase 6 through Phase 10).

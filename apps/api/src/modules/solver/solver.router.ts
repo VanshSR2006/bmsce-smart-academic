@@ -1,17 +1,22 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import type { SolverStudioConfig } from '@bmsce/contracts';
 import { prisma } from '../../config/prisma.js';
+import { config } from '../../config/env.js';
 import { setJobStatus } from '../../config/redis.js';
 
 const OPTIMIZER_URL = process.env.OPTIMIZER_URL || 'http://localhost:8000';
+const OPTIMIZER_HTTP_TIMEOUT_MS = Number(process.env.OPTIMIZER_HTTP_TIMEOUT_MS || 60000);
 
 const solverRunSchema = z.object({
   engine: z.enum(['CONSTRAINT_CSP', 'HYBRID_MIP', 'SIMULATED_ANNEALING', 'GREEDY_BASELINE']).optional(),
   academicTermId: z.string().optional(),
   departmentId: z.string().optional(),
+  programId: z.string().optional(),
   sectionIds: z.array(z.string()).optional(),
   semesters: z.array(z.number().int().min(1).max(8)).optional(),
   timeLimit: z.number().int().min(5).max(300).optional(),
+  demoMode: z.boolean().optional().default(false),
 });
 
 const DAY_NUMBER_TO_CODE: Record<number, string> = {
@@ -26,6 +31,7 @@ const DAY_NUMBER_TO_CODE: Record<number, string> = {
 export interface SolverScopeInput {
   academicTermId?: string;
   departmentId?: string;
+  programId?: string;
   sectionIds?: string[];
   semesters?: number[];
   timeLimit?: number;
@@ -48,6 +54,30 @@ export class SolverPayloadError extends Error {
  * FacultyAvailability, FacultyWorkloadRule, Room, and BellSchedule/TimePeriod.
  */
 export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) {
+  if (scope.departmentId) {
+    const dept = await prisma.department.findUnique({ where: { id: scope.departmentId } });
+    if (!dept) {
+      throw new SolverPayloadError(
+        404,
+        'DEPARTMENT_NOT_FOUND',
+        `Department '${scope.departmentId}' was not found.`
+      );
+    }
+  }
+
+  let selectedProg: { id: string; departmentId: string } | null = null;
+  if (scope.programId) {
+    selectedProg = await prisma.program.findUnique({ where: { id: scope.programId } });
+    if (!selectedProg || (scope.departmentId && selectedProg.departmentId !== scope.departmentId)) {
+      throw new SolverPayloadError(
+        404,
+        'PROGRAM_NOT_FOUND',
+        `Program '${scope.programId}' was not found within the selected department scope.`
+      );
+    }
+  }
+  const effectiveDeptId = scope.departmentId ?? selectedProg?.departmentId;
+
   const term = scope.academicTermId
     ? await prisma.academicTerm.findUnique({ where: { id: scope.academicTermId } })
     : await prisma.academicTerm.findFirst({
@@ -68,6 +98,7 @@ export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) 
       academicTermId: term.id,
       status: 'ACTIVE',
       ...(scope.departmentId ? { departmentId: scope.departmentId } : {}),
+      ...(scope.programId ? { programId: scope.programId } : {}),
       ...(scope.sectionIds?.length ? { id: { in: scope.sectionIds } } : {}),
       ...(scope.semesters?.length ? { semesterNumber: { in: scope.semesters } } : {}),
     },
@@ -187,7 +218,7 @@ export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) 
     prisma.room.findMany({
       where: {
         isActive: true,
-        ...(scope.departmentId ? { departmentId: scope.departmentId } : {}),
+        ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
       },
       orderBy: { roomCode: 'asc' },
     }),
@@ -268,187 +299,466 @@ export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) 
   return { term, payload };
 }
 
-/** Call the Python optimizer service. Returns null if unavailable (fallback to mock). */
-async function callOptimizer(payload: object): Promise<object | null> {
+const optimizerCandidatePayloadSchema = z.object({
+  label: z.string().optional(),
+  solver: z.string().optional(),
+  solver_status: z.string().optional(),
+  hard_violations: z.number().int().min(0).optional(),
+  objective_score: z.number().optional(),
+  metrics: z.record(z.unknown()).optional(),
+  slots: z.array(z.unknown()).optional(),
+});
+
+const optimizerResponseSchema = z.object({
+  feasible: z.boolean().optional(),
+  candidates: z.array(optimizerCandidatePayloadSchema),
+});
+
+type OptimizerCallResult =
+  | { ok: true; data: z.infer<typeof optimizerResponseSchema> }
+  | {
+      ok: false;
+      httpStatus: number;
+      errorCode: string;
+      solverStatus: string;
+      message: string;
+      details?: Record<string, unknown>;
+    };
+
+/** Call the Python optimizer service with strict validation and failure classification. */
+async function callOptimizer(payload: object, timeoutMs = OPTIMIZER_HTTP_TIMEOUT_MS): Promise<OptimizerCallResult> {
+  const effectiveUrl = process.env.OPTIMIZER_URL || OPTIMIZER_URL;
+  const effectiveTimeout = Number(process.env.OPTIMIZER_HTTP_TIMEOUT_MS || timeoutMs);
   try {
-    const res = await fetch(`${OPTIMIZER_URL}/optimize`, {
+    const res = await fetch(`${effectiveUrl}/optimize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60000), // 60s timeout
+      signal: AbortSignal.timeout(effectiveTimeout),
     });
+
     if (!res.ok) {
-      console.warn(`[Solver] Optimizer returned ${res.status} — falling back to mock`);
-      return null;
+      const rawText = await res.text().catch(() => '');
+      let upstreamDetail: unknown = rawText ? rawText.slice(0, 500) : null;
+      try {
+        const parsedErr = JSON.parse(rawText);
+        upstreamDetail = parsedErr?.detail ?? parsedErr?.message ?? upstreamDetail;
+      } catch {
+        // Keep truncated text
+      }
+      console.warn(`[Solver] Optimizer request failed with HTTP ${res.status}`);
+      return {
+        ok: false,
+        httpStatus: res.status === 504 ? 504 : 503,
+        errorCode: 'OPTIMIZER_HTTP_ERROR',
+        solverStatus: 'ERROR',
+        message: `Optimizer service returned HTTP ${res.status}.`,
+        details: { upstreamStatus: res.status, upstreamDetail },
+      };
     }
-    return await res.json();
+
+    const rawText = await res.text();
+    let jsonBody: unknown;
+    try {
+      jsonBody = JSON.parse(rawText);
+    } catch {
+      console.warn('[Solver] Optimizer returned malformed JSON');
+      return {
+        ok: false,
+        httpStatus: 502,
+        errorCode: 'OPTIMIZER_MALFORMED_JSON',
+        solverStatus: 'INVALID_RESPONSE',
+        message: 'Optimizer service returned malformed JSON.',
+      };
+    }
+
+    const parsed = optimizerResponseSchema.safeParse(jsonBody);
+    if (!parsed.success) {
+      console.warn('[Solver] Optimizer response failed schema validation');
+      return {
+        ok: false,
+        httpStatus: 502,
+        errorCode: 'OPTIMIZER_INVALID_RESPONSE',
+        solverStatus: 'INVALID_RESPONSE',
+        message: 'Optimizer service response did not match the expected schema.',
+      };
+    }
+
+    if (parsed.data.candidates.length === 0) {
+      console.warn('[Solver] Optimizer returned zero candidates');
+      return {
+        ok: false,
+        httpStatus: 502,
+        errorCode: 'OPTIMIZER_EMPTY_CANDIDATES',
+        solverStatus: 'EMPTY',
+        message: 'Optimizer service returned zero timetable candidates.',
+      };
+    }
+
+    return { ok: true, data: parsed.data };
   } catch (err: any) {
-    console.warn(`[Solver] Optimizer unavailable (${err.message}) — using mock data`);
-    return null;
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      console.warn(`[Solver] Optimizer request timed out after ${effectiveTimeout}ms`);
+      return {
+        ok: false,
+        httpStatus: 504,
+        errorCode: 'OPTIMIZER_TIMEOUT',
+        solverStatus: 'TIMEOUT',
+        message: `Optimizer request timed out after ${effectiveTimeout}ms.`,
+        details: { timeoutMs: effectiveTimeout },
+      };
+    }
+    console.warn(`[Solver] Optimizer unreachable: ${err?.message || 'unknown error'}`);
+    return {
+      ok: false,
+      httpStatus: 503,
+      errorCode: 'OPTIMIZER_UNAVAILABLE',
+      solverStatus: 'UNAVAILABLE',
+      message: `Optimizer service is unreachable: ${err?.message || 'connection failed'}.`,
+    };
   }
 }
 
 export const solverRouter = Router();
 
-// Solver Studio metadata and constraints configuration
-solverRouter.get('/studio-config', async (req: Request, res: Response) => {
-  return res.json({
-    data: {
-      title: 'Timetable Solver Studio • Constraint Engine',
-      scheme: 'Autonomous Scheme 2024–25 (Odd Semester)',
-      department: 'Department of Computer Science & Engineering • B.M.S. College of Engineering',
-      metrics: {
-        searchSpaceSlots: '2.41 × 10⁴ slots',
-        definedRulesCount: '19 Strict & Soft',
-        targetCohortsCount: '16 Sections',
+// Solver Studio metadata and constraints configuration (DB-backed, TASK-501)
+solverRouter.get('/studio-config', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const departmentId =
+      typeof req.query.departmentId === 'string' && req.query.departmentId.trim()
+        ? req.query.departmentId.trim()
+        : null;
+    const programId =
+      typeof req.query.programId === 'string' && req.query.programId.trim()
+        ? req.query.programId.trim()
+        : null;
+    const academicTermId =
+      typeof req.query.academicTermId === 'string' && req.query.academicTermId.trim()
+        ? req.query.academicTermId.trim()
+        : null;
+
+    const [departments, programs, academicTerms] = await Promise.all([
+      prisma.department.findMany({ orderBy: { code: 'asc' } }),
+      prisma.program.findMany({ orderBy: { code: 'asc' } }),
+      prisma.academicTerm.findMany({ orderBy: { createdAt: 'desc' } }),
+    ]);
+
+    const selectedDept = departmentId
+      ? departments.find((d) => d.id === departmentId) ?? null
+      : null;
+    if (departmentId && !selectedDept) {
+      return res.status(404).json({
+        error: { code: 'DEPARTMENT_NOT_FOUND', message: `Department '${departmentId}' was not found.` },
+      });
+    }
+
+    const selectedProg = programId
+      ? programs.find((p) => p.id === programId) ?? null
+      : null;
+    if (programId && (!selectedProg || (departmentId && selectedProg.departmentId !== departmentId))) {
+      return res.status(404).json({
+        error: {
+          code: 'PROGRAM_NOT_FOUND',
+          message: `Program '${programId}' was not found within the selected department scope.`,
+        },
+      });
+    }
+
+    const selectedTerm = academicTermId
+      ? academicTerms.find((t) => t.id === academicTermId) ?? null
+      : null;
+    if (academicTermId && !selectedTerm) {
+      return res.status(404).json({
+        error: {
+          code: 'ACADEMIC_TERM_NOT_FOUND',
+          message: `Academic term '${academicTermId}' was not found.`,
+        },
+      });
+    }
+
+    const effectiveDeptId = departmentId ?? selectedProg?.departmentId ?? null;
+
+    const [sections, offerings, facultyCount, roomsCount, bellSchedules] = await Promise.all([
+      prisma.section.findMany({
+        where: {
+          status: 'ACTIVE',
+          ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+          ...(programId ? { programId } : {}),
+          ...(academicTermId ? { academicTermId } : {}),
+        },
+        select: { id: true, semesterNumber: true },
+      }),
+      prisma.subjectOffering.findMany({
+        where: {
+          ...(academicTermId ? { academicTermId } : {}),
+          ...(effectiveDeptId || programId
+            ? {
+                section: {
+                  ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+                  ...(programId ? { programId } : {}),
+                },
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          _count: {
+            select: {
+              facultyAssignments: { where: { status: 'ACTIVE' } },
+            },
+          },
+        },
+      }),
+      prisma.faculty.count({
+        where: {
+          status: 'ACTIVE',
+          ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+        },
+      }),
+      prisma.room.count({
+        where: {
+          isActive: true,
+          ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+        },
+      }),
+      prisma.bellSchedule.findMany({
+        where: { ...(academicTermId ? { academicTermId } : {}) },
+        include: { periods: { where: { periodType: 'CLASS' } } },
+        orderBy: [{ isDefault: 'desc' }, { effectiveFrom: 'desc' }],
+        take: 1,
+      }),
+    ]);
+
+    const semesters = Array.from(new Set(sections.map((s) => s.semesterNumber))).sort(
+      (a, b) => a - b
+    );
+    const missingFacultyAssignmentsCount = offerings.filter(
+      (o) => o._count.facultyAssignments === 0
+    ).length;
+    const classPeriodsCount = bellSchedules[0]?.periods.length ?? 0;
+    const classPeriodsPerDay = classPeriodsCount > 0 ? classPeriodsCount : null;
+
+    const issues: string[] = [];
+    if (sections.length === 0) {
+      issues.push('No active sections found in the selected scope.');
+    }
+    if (offerings.length === 0) {
+      issues.push('No subject offerings found in the selected scope.');
+    }
+    if (missingFacultyAssignmentsCount > 0) {
+      issues.push(
+        `${missingFacultyAssignmentsCount} subject offering(s) have no active faculty assignment.`
+      );
+    }
+    if (roomsCount === 0) {
+      issues.push('No active rooms found in the selected scope.');
+    }
+    if (classPeriodsPerDay === null) {
+      issues.push('No BellSchedule with CLASS periods found; solver will default to 7 periods/day.');
+    }
+
+    const hasData =
+      departments.length > 0 ||
+      academicTerms.length > 0 ||
+      sections.length > 0 ||
+      offerings.length > 0;
+
+    const auditPassed =
+      sections.length > 0 &&
+      offerings.length > 0 &&
+      missingFacultyAssignmentsCount === 0 &&
+      roomsCount > 0;
+
+    const configData: SolverStudioConfig = {
+      hasData,
+      isDemoData: departments.some((d) => d.isDemo) || academicTerms.some((t) => t.isDemo),
+      scopeLabel: {
+        department: selectedDept
+          ? `${selectedDept.code} — ${selectedDept.name}`
+          : selectedProg
+          ? departments.find((d) => d.id === selectedProg.departmentId)?.name ?? 'Selected Department'
+          : 'All Departments',
+        program: selectedProg ? `${selectedProg.code} — ${selectedProg.name}` : 'All Programs',
+        academicTerm: selectedTerm
+          ? `${selectedTerm.academicYearLabel} (${selectedTerm.termLabel})`
+          : 'All Academic Terms',
+      },
+      appliedFilters: { departmentId, programId, academicTermId },
+      availableFilters: {
+        departments: departments.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+        programs: programs.map((p) => ({
+          id: p.id,
+          departmentId: p.departmentId,
+          code: p.code,
+          name: p.name,
+        })),
+        academicTerms: academicTerms.map((t) => ({
+          id: t.id,
+          academicYearLabel: t.academicYearLabel,
+          termLabel: t.termLabel,
+          status: t.status,
+        })),
+        semesters,
+      },
+      scopeSummary: {
+        sectionsCount: sections.length,
+        subjectOfferingsCount: offerings.length,
+        facultyCount,
+        roomsCount,
+        classPeriodsPerDay,
+        missingFacultyAssignmentsCount,
       },
       hardConstraints: [
         {
-          code: 'C-HARD-01',
+          code: 'HC-1',
           name: 'Zero Faculty Overlaps',
-          description: 'A faculty instructor cannot be committed to two overlapping cohorts, laboratories, or elective tracks across any department simultaneously.',
-          status: 'Validated: 58 CSE Faculty Registry',
+          description: 'A faculty member cannot be assigned to two sessions in the same time slot.',
+          status: `Active Faculty in Scope: ${facultyCount}`,
           isStrict: true,
         },
         {
-          code: 'C-HARD-02',
+          code: 'HC-2',
           name: 'Zero Physical Room Collisions',
-          description: 'Physical classrooms, smart amphitheaters, and workstations host strictly at most one session during any discrete 55-minute slot.',
-          status: 'Verified: 21 Lecture Halls & 12 Specialized Computing Labs',
+          description: 'Each active room can host at most one session per time slot.',
+          status: `Active Rooms in Scope: ${roomsCount}`,
           isStrict: true,
         },
         {
-          code: 'C-HARD-03',
-          name: 'Continuous Laboratory Integrity (3-Period Slot)',
-          description: 'Practical laboratory modules (e.g. Operating Systems, Computer Networks) must strictly allocate uninterrupted 3-hour contiguous periods without split breaks.',
-          status: 'NEP 2022 Mandate (Clause 4.3 – Lab Block Formats)',
+          code: 'HC-6',
+          name: 'Contiguous Laboratory Blocks',
+          description: 'Multi-period laboratory offerings are scheduled in contiguous periods on the same day.',
+          status: 'Enforced in CP-SAT',
           isStrict: true,
         },
         {
-          code: 'C-HARD-04',
-          name: 'Maximum Daily Faculty Contact Cap',
-          description: 'Institutional maximum workload policy: strict barrier of no more than 4 formal instruction hours per professor per working day.',
-          status: 'AICTE Workload Regulatory Threshold',
-          isStrict: true,
-        },
-        {
-          code: 'C-HARD-05',
-          name: 'Institutional Rest Recesses & Lunch Curfew',
-          description: 'Tea interval (10:30–10:45 AM) and institutional lunch window (12:45–01:45 PM) are locked. Zero instructional assignments permitted college-wide.',
-          status: 'Institutional Curfew Active',
+          code: 'HC-7',
+          name: 'Faculty Unavailability Respect',
+          description: 'FacultyAvailability UNAVAILABLE slots are excluded from candidate schedules.',
+          status: 'Enforced in CP-SAT & Greedy',
           isStrict: true,
         },
       ],
       softTargets: [
         {
-          key: 'IDLE_GAPS',
-          name: 'Minimize Student Idle Gap Windows',
-          description: 'Avoid scattered schedules where cohorts endure 1-hour voids between theoretical blocks.',
-          weight: 95,
-          priority: 'High Priority',
-          targetFitness: 95,
+          key: 'SC-3',
+          name: 'Consecutive Same-Subject Penalty',
+          description: 'Penalizes excessive consecutive theory periods of the same subject for a section.',
+          weight: 6,
+          priority: 'HIGH',
         },
         {
-          key: 'LECTURE_BARRIER',
-          name: 'Continuous Faculty Lecture Barrier (Max 2h)',
-          description: 'Penalize back-to-back theoretical lectures spanning beyond 110 minutes for any single instructor.',
-          weight: 82,
-          priority: 'High Priority',
-          targetFitness: 90,
-        },
-        {
-          key: 'ROOM_ANCHOR',
-          name: 'Cohort Room Anchor (Home Base)',
-          description: 'Retain designated lecture halls (e.g. 5th Sem Sec A anchored to PJ-302) to minimize inter-floor migration.',
-          weight: 92,
-          priority: 'High Priority',
-          targetFitness: 92,
-        },
-        {
-          key: 'SUBJECT_SPREAD',
-          name: 'Equitable Weekly Subject Spread',
-          description: 'Avoid delivering 2 distinct theoretical sessions of the identical course code on the same calendar day.',
-          weight: 78,
-          priority: 'Medium Priority',
-          targetFitness: 85,
+          key: 'SC-4',
+          name: 'Faculty Weekly Load Balance',
+          description: 'Balances teaching load across eligible faculty members.',
+          weight: 3,
+          priority: 'MEDIUM',
         },
       ],
       engineStrategies: [
-        { id: 'GREEDY_BASELINE', label: 'Greedy Baseline', note: 'Fast ~4s • Quick visibility test' },
-        { id: 'CONSTRAINT_CSP', label: 'Constraint CSP (OR-Tools)', note: 'Balanced ~12s • Recommended mode' },
-        { id: 'DEEP_GENETIC', label: 'Deep Genetic', note: 'Exhaustive ~3m • Global optima search' },
-      ],
-      targetSemesters: [
-        { sem: 1, label: 'Sem 1', checked: true },
-        { sem: 3, label: 'Sem 3', checked: true },
-        { sem: 5, label: 'Sem 5', checked: true },
-        { sem: 7, label: 'Sem 7', checked: true },
+        { id: 'CONSTRAINT_CSP', label: 'Constraint CSP (OR-Tools CP-SAT)', note: 'Optimal constraint solver' },
+        { id: 'GREEDY_BASELINE', label: 'Greedy Baseline', note: 'Fast heuristic baseline' },
       ],
       preExecutionAudit: {
-        passed: true,
-        summary: 'All 58 professors have non-negative hour capacities, room seating limits match section counts, and NEP laboratory contact blocks are balanced.',
+        passed: auditPassed,
+        summary: auditPassed
+          ? `Scope ready: ${sections.length} section(s), ${offerings.length} offering(s), ${facultyCount} faculty, ${roomsCount} room(s).`
+          : issues[0] || 'Scope requires configuration before solving.',
+        issues,
       },
-    },
-  });
+    };
+
+    return res.json({ data: configData });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 // Trigger solver execution
-solverRouter.post('/run', async (req: Request, res: Response) => {
-  // Role check: Only HOD, Faculty, or Admin can invoke solver
-  if (req.user && ['STUDENT', 'CR'].includes(req.user.role)) {
-    return res.status(403).json({
-      error: {
-        code: 'FORBIDDEN',
-        message: 'Student and CR roles are not permitted to trigger master timetable generation.',
-      },
-    });
-  }
-
-  const parseResult = solverRunSchema.safeParse(req.body);
-  if (!parseResult.success) {
-    return res.status(400).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid solver run parameters',
-        details: parseResult.error.format(),
-      },
-    });
-  }
-
-  const { engine = 'CONSTRAINT_CSP', academicTermId, departmentId, sectionIds, semesters, timeLimit = 30 } =
-    parseResult.data;
-  const startTime = Date.now();
-  const jobId = `job-solver-${Date.now()}`;
-
-  // Log job start to Redis / resilient store
-  await setJobStatus(jobId, {
-    status: 'RUNNING',
-    engine,
-    semesters,
-    startedAt: new Date().toISOString(),
-  });
-
-  let built: { term: { id: string }; payload: any };
+solverRouter.post('/run', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    built = await buildOptimizerPayloadFromDb({
-      academicTermId,
-      departmentId,
-      sectionIds,
-      semesters,
-      timeLimit,
-    });
-  } catch (err) {
-    if (err instanceof SolverPayloadError) {
-      return res.status(err.statusCode).json({
+    // Role check: Only HOD, Faculty, or Admin can invoke solver
+    if (req.user && ['STUDENT', 'CR'].includes(req.user.role)) {
+      return res.status(403).json({
         error: {
-          code: err.code,
-          message: err.message,
-          details: err.details,
+          code: 'FORBIDDEN',
+          message: 'Student and CR roles are not permitted to trigger master timetable generation.',
         },
       });
     }
-    throw err;
-  }
+
+    const parseResult = solverRunSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid solver run parameters',
+          details: parseResult.error.format(),
+        },
+      });
+    }
+
+    const {
+      engine = 'CONSTRAINT_CSP',
+      academicTermId,
+      departmentId,
+      programId,
+      sectionIds,
+      semesters,
+      timeLimit = 30,
+      demoMode = false,
+    } = parseResult.data;
+
+    if (demoMode && config.isProduction) {
+      return res.status(403).json({
+        error: {
+          code: 'DEMO_MODE_FORBIDDEN',
+          message: 'Simulated demo solver mode is disabled in production.',
+        },
+      });
+    }
+
+    if (demoMode && !config.isDemo) {
+      return res.status(403).json({
+        error: {
+          code: 'DEMO_MODE_DISABLED',
+          message: 'Simulated demo solver mode requires explicit demo environment configuration.',
+        },
+      });
+    }
+
+    const startTime = Date.now();
+    const jobId = `job-solver-${Date.now()}`;
+
+    // Log job start to Redis / resilient store
+    await setJobStatus(jobId, {
+      status: 'RUNNING',
+      engine,
+      semesters,
+      startedAt: new Date().toISOString(),
+    });
+
+    let built: { term: { id: string }; payload: any };
+    try {
+      built = await buildOptimizerPayloadFromDb({
+        academicTermId,
+        departmentId,
+        programId,
+        sectionIds,
+        semesters,
+        timeLimit,
+      });
+    } catch (err) {
+      if (err instanceof SolverPayloadError) {
+        return res.status(err.statusCode).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            details: err.details,
+          },
+        });
+      }
+      throw err;
+    }
 
   const user = req.user?.userId
     ? { id: req.user.userId }
@@ -460,11 +770,45 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
     });
   }
 
+  // Explicit isolated demo simulation (never mixed with real candidates or publishable)
+  if (demoMode) {
+    const runtimeMs = Date.now() - startTime;
+    return res.json({
+      data: {
+        runId: `demo-sim-${Date.now()}`,
+        status: 'DEMO_SIMULATED',
+        solverStatus: 'DEMO_SIMULATED',
+        runtimeMs,
+        candidatesGenerated: 1,
+        isDemoSimulated: true,
+        canPublish: false,
+        warning:
+          'DEMO / SIMULATED RESULT — Not generated by OR-Tools, not persisted as OptimizationCandidate, and cannot be published.',
+        candidates: [
+          {
+            label: 'DEMO / SIMULATED Candidate A',
+            solver: 'DEMO_SIMULATED',
+            solver_status: 'DEMO_SIMULATED',
+            hard_violations: 0,
+            objective_score: 0,
+            is_demo_simulated: true,
+            metrics: {
+              sections: built.payload.sections.length,
+              simulated: true,
+            },
+            slots: [],
+          },
+        ],
+        source: 'DEMO_SIMULATED',
+      },
+    });
+  }
+
   // Call the real Python optimizer service
-  const optimizerResult: any = await callOptimizer(built.payload);
+  const optimizerCall = await callOptimizer(built.payload);
   const runtimeMs = Date.now() - startTime;
 
-  if (!optimizerResult || !Array.isArray(optimizerResult.candidates) || optimizerResult.candidates.length === 0) {
+  if (!optimizerCall.ok) {
     const failedRun = await prisma.optimizationRun.create({
       data: {
         academicTermId: built.term.id,
@@ -472,7 +816,48 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
         algorithmCode: engine,
         timeLimitSeconds: timeLimit,
         status: 'FAILED',
-        solverStatus: 'UNAVAILABLE',
+        solverStatus: optimizerCall.solverStatus,
+        startedAt: new Date(startTime),
+        completedAt: new Date(),
+        runtimeMs: BigInt(runtimeMs),
+        inputSnapshot: JSON.stringify({
+          sections: built.payload.sections.length,
+          subjects: built.payload.subjects.length,
+          faculty: built.payload.faculty.length,
+          rooms: built.payload.rooms.length,
+          error: {
+            code: optimizerCall.errorCode,
+            message: optimizerCall.message,
+            details: optimizerCall.details ?? null,
+          },
+        }),
+      },
+    });
+
+    return res.status(optimizerCall.httpStatus).json({
+      error: {
+        code: optimizerCall.errorCode,
+        message: optimizerCall.message,
+        runId: failedRun.id,
+        details: optimizerCall.details ?? null,
+      },
+    });
+  }
+
+  const optimizerResult = optimizerCall.data;
+  const solverStatus = optimizerResult.feasible ? 'OPTIMAL' : 'FEASIBLE';
+  const candidateCount = optimizerResult.candidates.length;
+
+  // Persist run + candidates atomically so partial/duplicate candidates cannot occur on DB error
+  const run = await prisma.$transaction(async (tx) => {
+    const createdRun = await tx.optimizationRun.create({
+      data: {
+        academicTermId: built.term.id,
+        requestedById: user.id,
+        algorithmCode: engine,
+        timeLimitSeconds: timeLimit,
+        status: 'COMPLETED',
+        solverStatus,
         startedAt: new Date(startTime),
         completedAt: new Date(),
         runtimeMs: BigInt(runtimeMs),
@@ -485,56 +870,26 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
       },
     });
 
-    return res.status(503).json({
-      error: {
-        code: 'OPTIMIZER_UNAVAILABLE',
-        message: 'Optimizer service is unavailable or returned no candidates. No timetable candidate was persisted.',
-        runId: failedRun.id,
-      },
-    });
-  }
+    for (let i = 0; i < optimizerResult.candidates.length; i++) {
+      const c = optimizerResult.candidates[i];
+      await tx.optimizationCandidate.create({
+        data: {
+          optimizationRunId: createdRun.id,
+          candidateNumber: i + 1,
+          label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver || engine})`,
+          solverStatus: c.solver_status || 'OPTIMAL',
+          isFeasible: (c.hard_violations ?? 0) === 0,
+          hardViolationCount: c.hard_violations ?? 0,
+          softPenalty: c.objective_score ?? 0,
+          qualityScore: Math.max(0, 100 - (c.objective_score ?? 0)),
+          metrics: JSON.stringify(c.metrics || {}),
+          explanation: `Generated via ${c.solver || engine} engine. ${c.slots?.length || 0} scheduled contact periods.`,
+        },
+      });
+    }
 
-  const solverStatus = optimizerResult.feasible ? 'OPTIMAL' : 'FEASIBLE';
-  const candidateCount = optimizerResult.candidates.length;
-
-  // Persist run
-  const run = await prisma.optimizationRun.create({
-    data: {
-      academicTermId: built.term.id,
-      requestedById: user.id,
-      algorithmCode: engine,
-      timeLimitSeconds: timeLimit,
-      status: 'COMPLETED',
-      solverStatus,
-      startedAt: new Date(startTime),
-      completedAt: new Date(),
-      runtimeMs: BigInt(runtimeMs),
-      inputSnapshot: JSON.stringify({
-        sections: built.payload.sections.length,
-        subjects: built.payload.subjects.length,
-        faculty: built.payload.faculty.length,
-        rooms: built.payload.rooms.length,
-      }),
-    },
+    return createdRun;
   });
-
-  for (let i = 0; i < optimizerResult.candidates.length; i++) {
-    const c = optimizerResult.candidates[i];
-    await prisma.optimizationCandidate.create({
-      data: {
-        optimizationRunId: run.id,
-        candidateNumber: i + 1,
-        label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver})`,
-        solverStatus: c.solver_status || 'OPTIMAL',
-        isFeasible: c.hard_violations === 0,
-        hardViolationCount: c.hard_violations || 0,
-        softPenalty: c.objective_score || 0,
-        qualityScore: Math.max(0, 100 - (c.objective_score || 0)),
-        metrics: JSON.stringify(c.metrics || {}),
-        explanation: `Generated via ${c.solver} engine. ${c.slots?.length || 0} scheduled contact periods.`,
-      },
-    });
-  }
 
   return res.json({
     data: {
@@ -543,10 +898,15 @@ solverRouter.post('/run', async (req: Request, res: Response) => {
       solverStatus,
       runtimeMs,
       candidatesGenerated: candidateCount,
+      isDemoSimulated: false,
+      canPublish: true,
       candidates: optimizerResult.candidates,
       source: 'OR_TOOLS_PYTHON_SERVICE',
     },
   });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 // Candidate comparison data matching design/candidate-comparison.png

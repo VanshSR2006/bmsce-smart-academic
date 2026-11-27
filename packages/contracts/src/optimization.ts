@@ -48,3 +48,91 @@ export const OptimizationCandidateSchema = z.object({
 });
 export type OptimizationCandidate = z.infer<typeof OptimizationCandidateSchema>;
 
+// Canonical /api/v1/solver/studio-config contract (TASK-501)
+export const SolverStudioConfigSchema = z.object({
+  hasData: z.boolean(),
+  isDemoData: z.boolean(),
+  scopeLabel: z.object({
+    department: z.string(),
+    program: z.string(),
+    academicTerm: z.string(),
+  }),
+  appliedFilters: z.object({
+    departmentId: z.string().nullable(),
+    programId: z.string().nullable(),
+    academicTermId: z.string().nullable(),
+  }),
+  availableFilters: z.object({
+    departments: z.array(z.object({ id: z.string(), code: z.string(), name: z.string() })),
+    programs: z.array(
+      z.object({
+        id: z.string(),
+        departmentId: z.string(),
+        code: z.string(),
+        name: z.string(),
+      })
+    ),
+    academicTerms: z.array(
+      z.object({
+        id: z.string(),
+        academicYearLabel: z.string(),
+        termLabel: z.string(),
+        status: z.string(),
+      })
+    ),
+    semesters: z.array(z.number().int()),
+  }),
+  scopeSummary: z.object({
+    sectionsCount: z.number().int(),
+    subjectOfferingsCount: z.number().int(),
+    facultyCount: z.number().int(),
+    roomsCount: z.number().int(),
+    classPeriodsPerDay: z.number().int().nullable(),
+    missingFacultyAssignmentsCount: z.number().int(),
+  }),
+  hardConstraints: z.array(
+    z.object({
+      code: z.string(),
+      name: z.string(),
+      description: z.string(),
+      status: z.string(),
+      isStrict: z.boolean(),
+    })
+  ),
+  softTargets: z.array(
+    z.object({
+      key: z.string(),
+      name: z.string(),
+      description: z.string(),
+      weight: z.number(),
+      priority: z.string(),
+    })
+  ),
+  engineStrategies: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      note: z.string(),
+    })
+  ),
+  preExecutionAudit: z.object({
+    passed: z.boolean(),
+    summary: z.string(),
+    issues: z.array(z.string()),
+  }),
+});
+export type SolverStudioConfig = z.infer<typeof SolverStudioConfigSchema>;
+
+export const SolverRunResultSchema = z.object({
+  runId: z.string(),
+  status: z.string(),
+  solverStatus: z.string(),
+  runtimeMs: z.number(),
+  candidatesGenerated: z.number().int(),
+  isDemoSimulated: z.boolean(),
+  canPublish: z.boolean(),
+  warning: z.string().optional(),
+  source: z.string(),
+});
+export type SolverRunResult = z.infer<typeof SolverRunResultSchema>;
+
