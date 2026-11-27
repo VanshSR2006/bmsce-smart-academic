@@ -9,7 +9,7 @@ services:
     plan: free
     region: singapore
     rootDir: .
-    buildCommand: npm ci --include=dev && npx prisma generate && npm run build --workspace=apps/api
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build --workspace=packages/contracts && npm run build --workspace=apps/api
     startCommand: npx prisma migrate deploy --schema=./prisma/schema.prisma && node apps/api/dist/server.js
     healthCheckPath: /api/v1/health
     envVars:
