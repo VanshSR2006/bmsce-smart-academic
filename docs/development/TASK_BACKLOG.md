@@ -43,7 +43,7 @@ Priorities: **P0** (Critical crashes / data integrity / core solver) · **P1** (
 | ID | Description | Relevant Files | Dependencies | Priority | Status | Acceptance Criteria |
 |---|---|---|---|---|---|---|
 | `TASK-501` | Fix `solver.router.ts` `/run` payload builder to use `SubjectOffering`, `FacultyAssignment`, `FacultyAvailability`, and `BellSchedule` from DB and wire `SolverStudio` (`/studio-config` + `/run`) | `packages/contracts/src/optimization.ts`, `apps/api/src/modules/solver/solver.router.ts`, `apps/web/src/features/solver/SolverStudio.tsx` | `TASK-401`, `TASK-402` | **P0** | `DONE` | Payload builder (`TASK-202B`) preserved with `programId`/scope validation; `/studio-config` & `SolverStudio.tsx` DB-backed with loading/error/empty states |
-| `TASK-502` | Persist `CandidateSession` rows and wire `GET /api/v1/solver/candidates/compare` + `POST /publish` to real `OptimizationRun` / `OptimizationCandidate` | `solver.router.ts`, `CandidateComparison.tsx` | `TASK-501` | **P1** | `PENDING` | CandidateComparison displays real solver candidates and can publish one to `TimetableVersion` |
+| `TASK-502` | Persist `CandidateSession` rows and wire `GET /api/v1/solver/candidates/compare` + `POST /api/v1/solver/publish` to real `OptimizationRun` / `OptimizationCandidate` | `packages/contracts/src/optimization.ts`, `apps/api/src/modules/solver/solver.router.ts`, `apps/web/src/features/candidates/CandidateComparison.tsx` | `TASK-501` | **P1** | `DONE` | `CandidateSession` persisted atomically; `GET /candidates/compare` & `CandidateComparison.tsx` DB-backed; `POST /publish` creates non-destructive `TimetableVersion` + `TimetableSession` + `TimetablePublication` + `AuditLog` |
 
 ## Phase 6 — Disruption Repair & Conflict Detection
 

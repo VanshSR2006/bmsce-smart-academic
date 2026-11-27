@@ -1,9 +1,15 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import type { SolverStudioConfig } from '@bmsce/contracts';
+import {
+  PublishCandidateRequestSchema,
+  type CandidateComparisonResponse,
+  type PublishCandidateResponse,
+  type SolverStudioConfig,
+} from '@bmsce/contracts';
 import { prisma } from '../../config/prisma.js';
 import { config } from '../../config/env.js';
 import { setJobStatus } from '../../config/redis.js';
+import { requireAuth } from '../../middleware/auth.js';
 
 const OPTIMIZER_URL = process.env.OPTIMIZER_URL || 'http://localhost:8000';
 const OPTIMIZER_HTTP_TIMEOUT_MS = Number(process.env.OPTIMIZER_HTTP_TIMEOUT_MS || 60000);
@@ -27,6 +33,45 @@ const DAY_NUMBER_TO_CODE: Record<number, string> = {
   5: 'FRI',
   6: 'SAT',
 };
+
+const DAY_CODE_TO_NUMBER: Record<string, number> = {
+  MON: 1,
+  TUE: 2,
+  WED: 3,
+  THU: 4,
+  FRI: 5,
+  SAT: 6,
+  SUN: 7,
+};
+
+const PUBLISHER_ROLES = new Set(['HOD', 'DEPT_HEAD', 'ADMIN', 'DEAN', 'PLATFORM_ADMIN']);
+const PUBLISH_TRANSACTION_MAX_ATTEMPTS = 3;
+
+function requirePublishAuthority(req: Request, res: Response, next: NextFunction) {
+  // requireAuth is deliberately registered first on this route. Keep this check
+  // separate so an authenticated caller without a publishing role gets a 403.
+  if (!PUBLISHER_ROLES.has(req.user!.role.toUpperCase())) {
+    return res.status(403).json({
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Only HOD, Department Head, Dean, or Academic Administrator may publish optimization candidates.',
+      },
+    });
+  }
+
+  return next();
+}
+
+function isRetryablePublishConflict(error: unknown) {
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : null;
+  // P2002 is the timetable version unique-key collision; P2034 is Prisma's
+  // serializable transaction write-conflict. In both cases the transaction has
+  // rolled back and it is safe to re-read the current version chain.
+  return code === 'P2002' || code === 'P2034';
+}
 
 export interface SolverScopeInput {
   academicTermId?: string;
@@ -81,9 +126,9 @@ export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) 
   const term = scope.academicTermId
     ? await prisma.academicTerm.findUnique({ where: { id: scope.academicTermId } })
     : await prisma.academicTerm.findFirst({
-        where: { status: 'ACTIVE' },
-        orderBy: { createdAt: 'desc' },
-      });
+      where: { status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+    });
 
   if (!term) {
     throw new SolverPayloadError(
@@ -296,8 +341,40 @@ export async function buildOptimizerPayloadFromDb(scope: SolverScopeInput = {}) 
     periods_per_day: periodsPerDay,
   };
 
-  return { term, payload };
+  return {
+    term,
+    payload,
+    meta: {
+      effectiveDeptId: effectiveDeptId ?? null,
+      offeringBySectionSubject: new Map(
+        offerings.map((o) => [
+          `${o.sectionId}:${o.subjectId}`,
+          {
+            id: o.id,
+            requiresLab: o.requiresLab || o.subject.subjectType === 'LAB',
+          },
+        ])
+      ),
+      validFacultyIds: new Set(facultyIds),
+      validRoomIds: new Set(eligibleRooms.map((r) => r.id)),
+      classPeriods: classPeriods.map((p) => ({
+        periodNumber: p.periodNumber,
+        startTime: p.startTime,
+        endTime: p.endTime,
+      })),
+    },
+  };
 }
+
+const optimizerAssignedSlotSchema = z.object({
+  section_id: z.string().min(1),
+  subject_id: z.string().min(1),
+  faculty_id: z.string().min(1),
+  room_id: z.string().min(1),
+  day: z.string().min(1),
+  period: z.number().int().min(1),
+  is_lab: z.boolean().optional().default(false),
+});
 
 const optimizerCandidatePayloadSchema = z.object({
   label: z.string().optional(),
@@ -306,7 +383,7 @@ const optimizerCandidatePayloadSchema = z.object({
   hard_violations: z.number().int().min(0).optional(),
   objective_score: z.number().optional(),
   metrics: z.record(z.unknown()).optional(),
-  slots: z.array(z.unknown()).optional(),
+  slots: z.array(optimizerAssignedSlotSchema),
 });
 
 const optimizerResponseSchema = z.object({
@@ -317,13 +394,13 @@ const optimizerResponseSchema = z.object({
 type OptimizerCallResult =
   | { ok: true; data: z.infer<typeof optimizerResponseSchema> }
   | {
-      ok: false;
-      httpStatus: number;
-      errorCode: string;
-      solverStatus: string;
-      message: string;
-      details?: Record<string, unknown>;
-    };
+    ok: false;
+    httpStatus: number;
+    errorCode: string;
+    solverStatus: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
 
 /** Call the Python optimizer service with strict validation and failure classification. */
 async function callOptimizer(payload: object, timeoutMs = OPTIMIZER_HTTP_TIMEOUT_MS): Promise<OptimizerCallResult> {
@@ -493,11 +570,11 @@ solverRouter.get('/studio-config', async (req: Request, res: Response, next: Nex
           ...(academicTermId ? { academicTermId } : {}),
           ...(effectiveDeptId || programId
             ? {
-                section: {
-                  ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
-                  ...(programId ? { programId } : {}),
-                },
-              }
+              section: {
+                ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+                ...(programId ? { programId } : {}),
+              },
+            }
             : {}),
         },
         select: {
@@ -576,8 +653,8 @@ solverRouter.get('/studio-config', async (req: Request, res: Response, next: Nex
         department: selectedDept
           ? `${selectedDept.code} — ${selectedDept.name}`
           : selectedProg
-          ? departments.find((d) => d.id === selectedProg.departmentId)?.name ?? 'Selected Department'
-          : 'All Departments',
+            ? departments.find((d) => d.id === selectedProg.departmentId)?.name ?? 'Selected Department'
+            : 'All Departments',
         program: selectedProg ? `${selectedProg.code} — ${selectedProg.name}` : 'All Programs',
         academicTerm: selectedTerm
           ? `${selectedTerm.academicYearLabel} (${selectedTerm.termLabel})`
@@ -737,7 +814,7 @@ solverRouter.post('/run', async (req: Request, res: Response, next: NextFunction
       startedAt: new Date().toISOString(),
     });
 
-    let built: { term: { id: string }; payload: any };
+    let built: Awaited<ReturnType<typeof buildOptimizerPayloadFromDb>>;
     try {
       built = await buildOptimizerPayloadFromDb({
         academicTermId,
@@ -760,252 +837,1004 @@ solverRouter.post('/run', async (req: Request, res: Response, next: NextFunction
       throw err;
     }
 
-  const user = req.user?.userId
-    ? { id: req.user.userId }
-    : await prisma.user.findFirst();
+    const user = req.user?.userId
+      ? { id: req.user.userId }
+      : await prisma.user.findFirst();
 
-  if (!user) {
-    return res.status(400).json({
-      error: { code: 'REQUESTER_NOT_FOUND', message: 'No user record available to attribute optimization run.' },
-    });
-  }
+    if (!user) {
+      return res.status(400).json({
+        error: { code: 'REQUESTER_NOT_FOUND', message: 'No user record available to attribute optimization run.' },
+      });
+    }
 
-  // Explicit isolated demo simulation (never mixed with real candidates or publishable)
-  if (demoMode) {
-    const runtimeMs = Date.now() - startTime;
-    return res.json({
-      data: {
-        runId: `demo-sim-${Date.now()}`,
-        status: 'DEMO_SIMULATED',
-        solverStatus: 'DEMO_SIMULATED',
-        runtimeMs,
-        candidatesGenerated: 1,
-        isDemoSimulated: true,
-        canPublish: false,
-        warning:
-          'DEMO / SIMULATED RESULT — Not generated by OR-Tools, not persisted as OptimizationCandidate, and cannot be published.',
-        candidates: [
-          {
-            label: 'DEMO / SIMULATED Candidate A',
-            solver: 'DEMO_SIMULATED',
-            solver_status: 'DEMO_SIMULATED',
-            hard_violations: 0,
-            objective_score: 0,
-            is_demo_simulated: true,
-            metrics: {
-              sections: built.payload.sections.length,
-              simulated: true,
-            },
-            slots: [],
-          },
-        ],
-        source: 'DEMO_SIMULATED',
-      },
-    });
-  }
-
-  // Call the real Python optimizer service
-  const optimizerCall = await callOptimizer(built.payload);
-  const runtimeMs = Date.now() - startTime;
-
-  if (!optimizerCall.ok) {
-    const failedRun = await prisma.optimizationRun.create({
-      data: {
-        academicTermId: built.term.id,
-        requestedById: user.id,
-        algorithmCode: engine,
-        timeLimitSeconds: timeLimit,
-        status: 'FAILED',
-        solverStatus: optimizerCall.solverStatus,
-        startedAt: new Date(startTime),
-        completedAt: new Date(),
-        runtimeMs: BigInt(runtimeMs),
-        inputSnapshot: JSON.stringify({
-          sections: built.payload.sections.length,
-          subjects: built.payload.subjects.length,
-          faculty: built.payload.faculty.length,
-          rooms: built.payload.rooms.length,
-          error: {
-            code: optimizerCall.errorCode,
-            message: optimizerCall.message,
-            details: optimizerCall.details ?? null,
-          },
-        }),
-      },
-    });
-
-    return res.status(optimizerCall.httpStatus).json({
-      error: {
-        code: optimizerCall.errorCode,
-        message: optimizerCall.message,
-        runId: failedRun.id,
-        details: optimizerCall.details ?? null,
-      },
-    });
-  }
-
-  const optimizerResult = optimizerCall.data;
-  const solverStatus = optimizerResult.feasible ? 'OPTIMAL' : 'FEASIBLE';
-  const candidateCount = optimizerResult.candidates.length;
-
-  // Persist run + candidates atomically so partial/duplicate candidates cannot occur on DB error
-  const run = await prisma.$transaction(async (tx) => {
-    const createdRun = await tx.optimizationRun.create({
-      data: {
-        academicTermId: built.term.id,
-        requestedById: user.id,
-        algorithmCode: engine,
-        timeLimitSeconds: timeLimit,
-        status: 'COMPLETED',
-        solverStatus,
-        startedAt: new Date(startTime),
-        completedAt: new Date(),
-        runtimeMs: BigInt(runtimeMs),
-        inputSnapshot: JSON.stringify({
-          sections: built.payload.sections.length,
-          subjects: built.payload.subjects.length,
-          faculty: built.payload.faculty.length,
-          rooms: built.payload.rooms.length,
-        }),
-      },
-    });
-
-    for (let i = 0; i < optimizerResult.candidates.length; i++) {
-      const c = optimizerResult.candidates[i];
-      await tx.optimizationCandidate.create({
+    // Explicit isolated demo simulation (never mixed with real candidates or publishable)
+    if (demoMode) {
+      const runtimeMs = Date.now() - startTime;
+      return res.json({
         data: {
-          optimizationRunId: createdRun.id,
-          candidateNumber: i + 1,
-          label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver || engine})`,
-          solverStatus: c.solver_status || 'OPTIMAL',
-          isFeasible: (c.hard_violations ?? 0) === 0,
-          hardViolationCount: c.hard_violations ?? 0,
-          softPenalty: c.objective_score ?? 0,
-          qualityScore: Math.max(0, 100 - (c.objective_score ?? 0)),
-          metrics: JSON.stringify(c.metrics || {}),
-          explanation: `Generated via ${c.solver || engine} engine. ${c.slots?.length || 0} scheduled contact periods.`,
+          runId: `demo-sim-${Date.now()}`,
+          status: 'DEMO_SIMULATED',
+          solverStatus: 'DEMO_SIMULATED',
+          runtimeMs,
+          candidatesGenerated: 1,
+          isDemoSimulated: true,
+          canPublish: false,
+          warning:
+            'DEMO / SIMULATED RESULT — Not generated by OR-Tools, not persisted as OptimizationCandidate, and cannot be published.',
+          candidates: [
+            {
+              label: 'DEMO / SIMULATED Candidate A',
+              solver: 'DEMO_SIMULATED',
+              solver_status: 'DEMO_SIMULATED',
+              hard_violations: 0,
+              objective_score: 0,
+              is_demo_simulated: true,
+              metrics: {
+                sections: built.payload.sections.length,
+                simulated: true,
+              },
+              slots: [],
+            },
+          ],
+          source: 'DEMO_SIMULATED',
         },
       });
     }
 
-    return createdRun;
-  });
+    // Call the real Python optimizer service
+    const optimizerCall = await callOptimizer(built.payload);
+    const runtimeMs = Date.now() - startTime;
 
-  return res.json({
-    data: {
-      runId: run.id,
-      status: 'COMPLETED',
-      solverStatus,
-      runtimeMs,
-      candidatesGenerated: candidateCount,
-      isDemoSimulated: false,
-      canPublish: true,
-      candidates: optimizerResult.candidates,
-      source: 'OR_TOOLS_PYTHON_SERVICE',
-    },
-  });
+    if (!optimizerCall.ok) {
+      const failedRun = await prisma.optimizationRun.create({
+        data: {
+          academicTermId: built.term.id,
+          requestedById: user.id,
+          algorithmCode: engine,
+          timeLimitSeconds: timeLimit,
+          status: 'FAILED',
+          solverStatus: optimizerCall.solverStatus,
+          startedAt: new Date(startTime),
+          completedAt: new Date(),
+          runtimeMs: BigInt(runtimeMs),
+          inputSnapshot: JSON.stringify({
+            sections: built.payload.sections.length,
+            subjects: built.payload.subjects.length,
+            faculty: built.payload.faculty.length,
+            rooms: built.payload.rooms.length,
+            error: {
+              code: optimizerCall.errorCode,
+              message: optimizerCall.message,
+              details: optimizerCall.details ?? null,
+            },
+          }),
+        },
+      });
+
+      return res.status(optimizerCall.httpStatus).json({
+        error: {
+          code: optimizerCall.errorCode,
+          message: optimizerCall.message,
+          runId: failedRun.id,
+          details: optimizerCall.details ?? null,
+        },
+      });
+    }
+
+  const optimizerResult = optimizerCall.data;
+      const solverStatus = optimizerResult.feasible ? 'OPTIMAL' : 'FEASIBLE';
+      const candidateCount = optimizerResult.candidates.length;
+
+      const formatFallbackPeriod = (periodNum: number) => {
+        const startHour = 8 + (periodNum - 1);
+        const endHour = startHour + 1;
+        const pad = (h: number) => `${String(h).padStart(2, '0')}:30`;
+        return { startTime: pad(startHour), endTime: pad(endHour) };
+      };
+
+      // Validate and map every candidate's scheduled slots BEFORE persisting anything
+      const mappedCandidates: Array<{
+        candidateNumber: number;
+        label: string;
+        solverStatus: string;
+        isFeasible: boolean;
+        hardViolationCount: number;
+        softPenalty: number;
+        qualityScore: number;
+        unscheduledSessionCount: number;
+        metrics: string;
+        explanation: string;
+        sessions: Array<{
+          subjectOfferingId: string;
+          facultyId: string;
+          roomId: string;
+          sectionId: string;
+          dayOfWeek: number;
+          startTime: string;
+          endTime: string;
+          durationPeriods: number;
+          sessionKind: string;
+        }>;
+      }> =[];
+
+    for (let i = 0; i < optimizerResult.candidates.length; i++) {
+      const c = optimizerResult.candidates[i];
+      if (!c.slots || c.slots.length === 0) {
+        const failedRun = await prisma.optimizationRun.create({
+          data: {
+            academicTermId: built.term.id,
+            requestedById: user.id,
+            algorithmCode: engine,
+            timeLimitSeconds: timeLimit,
+            status: 'FAILED',
+            solverStatus: 'INVALID_RESPONSE',
+            failureCode: 'OPTIMIZER_EMPTY_SLOTS',
+            failureMessage: `Candidate ${i + 1} returned zero scheduled slots.`,
+            startedAt: new Date(startTime),
+            completedAt: new Date(),
+            runtimeMs: BigInt(runtimeMs),
+          },
+        });
+        return res.status(502).json({
+          error: {
+            code: 'OPTIMIZER_EMPTY_SLOTS',
+            message: `Optimizer candidate ${i + 1} returned zero scheduled slots.`,
+            runId: failedRun.id,
+          },
+        });
+      }
+
+      const mappedSessions: (typeof mappedCandidates)[number]['sessions'] = [];
+      for (const slot of c.slots) {
+        const dayOfWeek = DAY_CODE_TO_NUMBER[slot.day.toUpperCase()];
+        const offering = built.meta.offeringBySectionSubject.get(`${slot.section_id}:${slot.subject_id}`);
+        const validFaculty = built.meta.validFacultyIds.has(slot.faculty_id);
+        const validRoom = built.meta.validRoomIds.has(slot.room_id);
+        const validPeriod = slot.period >= 1 && slot.period <= built.payload.periods_per_day;
+
+        if (!dayOfWeek || !offering || !validFaculty || !validRoom || !validPeriod) {
+          const failedRun = await prisma.optimizationRun.create({
+            data: {
+              academicTermId: built.term.id,
+              requestedById: user.id,
+              algorithmCode: engine,
+              timeLimitSeconds: timeLimit,
+              status: 'FAILED',
+              solverStatus: 'INVALID_RESPONSE',
+              failureCode: 'OPTIMIZER_INVALID_SLOT',
+              failureMessage: `Candidate ${i + 1} returned an invalid slot reference (section=${slot.section_id}, subject=${slot.subject_id}, faculty=${slot.faculty_id}, room=${slot.room_id}, day=${slot.day}, period=${slot.period}).`,
+              startedAt: new Date(startTime),
+              completedAt: new Date(),
+              runtimeMs: BigInt(runtimeMs),
+            },
+          });
+          return res.status(502).json({
+            error: {
+              code: 'OPTIMIZER_INVALID_SLOT',
+              message: 'Optimizer response contained invalid entity or slot references.',
+              runId: failedRun.id,
+            },
+          });
+        }
+
+        const periodObj = built.meta.classPeriods[slot.period - 1];
+        const times = periodObj
+          ? { startTime: periodObj.startTime, endTime: periodObj.endTime }
+          : formatFallbackPeriod(slot.period);
+
+        mappedSessions.push({
+          subjectOfferingId: offering.id,
+          facultyId: slot.faculty_id,
+          roomId: slot.room_id,
+          sectionId: slot.section_id,
+          dayOfWeek,
+          startTime: times.startTime,
+          endTime: times.endTime,
+          durationPeriods: 1,
+          sessionKind: slot.is_lab || offering.requiresLab ? 'LAB' : 'LECTURE',
+        });
+      }
+
+      const rawUnscheduled =
+        typeof c.metrics?.unscheduled_sessions === 'number' ? c.metrics.unscheduled_sessions : 0;
+
+      mappedCandidates.push({
+        candidateNumber: i + 1,
+        label: c.label || `Candidate ${String.fromCharCode(65 + i)} (${c.solver || engine})`,
+        solverStatus: c.solver_status || 'OPTIMAL',
+        isFeasible: (c.hard_violations ?? 0) === 0,
+        hardViolationCount: c.hard_violations ?? 0,
+        softPenalty: c.objective_score ?? 0,
+        qualityScore: Math.max(0, 100 - (c.objective_score ?? 0)),
+        unscheduledSessionCount: rawUnscheduled,
+        metrics: JSON.stringify(c.metrics || {}),
+        explanation: `Generated via ${c.solver || engine} engine. ${mappedSessions.length} scheduled contact periods.`,
+        sessions: mappedSessions,
+      });
+    }
+
+    // Persist run + candidates + candidate sessions atomically
+    const run = await prisma.$transaction(async (tx) => {
+      const createdRun = await tx.optimizationRun.create({
+        data: {
+          academicTermId: built.term.id,
+          requestedById: user.id,
+          algorithmCode: engine,
+          timeLimitSeconds: timeLimit,
+          status: 'COMPLETED',
+          solverStatus,
+          startedAt: new Date(startTime),
+          completedAt: new Date(),
+          runtimeMs: BigInt(runtimeMs),
+          inputSnapshot: JSON.stringify({
+            departmentId: built.meta.effectiveDeptId,
+            programId: programId ?? null,
+            semesters: semesters ?? [],
+            sections: built.payload.sections.length,
+            subjects: built.payload.subjects.length,
+            faculty: built.payload.faculty.length,
+            rooms: built.payload.rooms.length,
+          }),
+        },
+      });
+
+      for (const mc of mappedCandidates) {
+        const createdCandidate = await tx.optimizationCandidate.create({
+          data: {
+            optimizationRunId: createdRun.id,
+            candidateNumber: mc.candidateNumber,
+            label: mc.label,
+            solverStatus: mc.solverStatus,
+            isFeasible: mc.isFeasible,
+            hardViolationCount: mc.hardViolationCount,
+            softPenalty: mc.softPenalty,
+            qualityScore: mc.qualityScore,
+            unscheduledSessionCount: mc.unscheduledSessionCount,
+            metrics: mc.metrics,
+            explanation: mc.explanation,
+          },
+        });
+
+        await tx.candidateSession.createMany({
+          data: mc.sessions.map((s) => ({
+            optimizationCandidateId: createdCandidate.id,
+            subjectOfferingId: s.subjectOfferingId,
+            facultyId: s.facultyId,
+            roomId: s.roomId,
+            sectionId: s.sectionId,
+            dayOfWeek: s.dayOfWeek,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            durationPeriods: s.durationPeriods,
+            sessionKind: s.sessionKind,
+          })),
+        });
+      }
+
+      return createdRun;
+    });
+
+    return res.json({
+      data: {
+        runId: run.id,
+        status: 'COMPLETED',
+        solverStatus,
+        runtimeMs,
+        candidatesGenerated: candidateCount,
+        isDemoSimulated: false,
+        canPublish: true,
+        candidates: optimizerResult.candidates,
+        source: 'OR_TOOLS_PYTHON_SERVICE',
+      },
+    });
   } catch (err) {
     return next(err);
   }
 });
 
-// Candidate comparison data matching design/candidate-comparison.png
-solverRouter.get('/candidates/compare', async (req: Request, res: Response) => {
-  return res.json({
-    data: {
-      activeBaselineVersion: 'v4.2-OSD (DAAB Ratified)',
-      candidates: [
-        {
-          id: 'cand-a',
-          number: 1,
-          name: 'Option A • Recommended Proxy',
-          strategyType: 'SUBSTITUTE_FACULTY',
-          title: 'Substitute Faculty Peer Allocation',
-          description: 'Prof. S. Malathi (Assoc. Prof, DAA Co-Instructor) assumes Period 1 contact duties in Room PJ-302.',
-          disruptionImpactScore: 96.2,
-          impactCategory: 'Minimal Ripple',
-          targetTime: 'Mon 08:30 – 09:30 AM',
-          venue: 'PJ-302 (Reserved)',
-          replacement: 'Prof. S. Malathi',
-          facultyAvailable: 'Assigned: 15h / 18h limit (Weekly cap 18h / 18h max)',
-          cohortMovement: 'Zero relocation (Students seated in PJ-302)',
-          curriculumSync: 'Module 3 Exam Trackers matched, sync in viva',
-          isRecommended: true,
-          isSelected: true,
-        },
-        {
-          id: 'cand-b',
-          number: 2,
-          name: 'Option B • Slot Relocation',
-          strategyType: 'MUTUAL_SLOT_SWAP',
-          title: 'Mutual Slot Reschedule / Swap',
-          description: 'Shift DAA Core lecture to Thursday Period 7 (03:45–04:45 PM); release Monday Period 1 as sports.',
-          disruptionImpactScore: 84.6,
-          impactCategory: 'Contained Rescheduled',
-          targetTime: 'Thu 03:45 – 04:45 PM',
-          venue: 'PJ-302 (Slot Open)',
-          replacement: 'Dr. A. Ramanathan (Post-recovery)',
-          facultyAvailable: 'Open calendar window on Thursday',
-          cohortMovement: 'Contains fatigue alert: 3 consecutive hours in lab',
-          curriculumSync: 'Zero collision detected in Central Matrix',
-          isRecommended: false,
-          isSelected: false,
-        },
-        {
-          id: 'cand-c',
-          number: 3,
-          name: 'Option C • Regulated Cancellation',
-          strategyType: 'FREE_PERIOD',
-          title: 'Supervised Digital Library Self-Study',
-          description: 'Release Period 1 as supervised preparatory study in Digital Library (LIB-3) with biometric logging.',
-          disruptionImpactScore: 68.0,
-          impactCategory: 'Deficit Incurred',
-          targetTime: 'Mon 08:30 – 09:30 AM',
-          venue: 'Digital Library (LIB-3)',
-          replacement: 'Asst. Librarian On-Duty',
-          facultyAvailable: 'Zero faculty credit required',
-          cohortMovement: 'Deficit: 1.0 h per sem. (Regulatory balance required: 39 / 40)',
-          curriculumSync: 'Requires make-up hour before CIE-2',
-          isRecommended: false,
-          isSelected: false,
-        },
-      ],
-      differentialVisualizer: {
-        original: [
-          { slot: '08:30 - 09:30', period: 'PERIOD 1', title: 'DAA Core (Theory)', faculty: 'Dr. A. Ramanathan', isDisrupted: true },
-          { slot: '09:30 - 10:30', period: 'PERIOD 2', title: 'DBMS Principles', faculty: 'Dr. P. Jayashree' },
-          { slot: '10:45 - 11:45', period: 'PERIOD 3', title: 'Computer Networks', faculty: 'Prof. M. K. Rao' },
-          { slot: '11:45 - 12:45', period: 'PERIOD 4', title: 'Theory of Computation', faculty: 'Dr. G. Anita' },
-          { slot: '12:45 - 01:45', period: 'RECESS', title: 'Campus Lunch', faculty: '-' },
-          { slot: '01:45 - 04:45', period: 'PERIOD 5-7', title: 'Algorithms & Networks Lab', faculty: 'Batch B1/B2/B3' },
-        ],
-        repaired: [
-          { slot: '08:30 - 09:30', period: 'PERIOD 1', title: 'DAA Core (Theory)', faculty: 'Prof. S. Malathi [PROXY]', isChanged: true, changeType: 'PROXY' },
-          { slot: '09:30 - 10:30', period: 'PERIOD 2', title: 'DBMS Principles', faculty: 'Dr. P. Jayashree' },
-          { slot: '10:45 - 11:45', period: 'PERIOD 3', title: 'Computer Networks', faculty: 'Prof. M. K. Rao' },
-          { slot: '11:45 - 12:45', period: 'PERIOD 4', title: 'Theory of Computation', faculty: 'Dr. G. Anita' },
-          { slot: '12:45 - 01:45', period: 'RECESS', title: 'Campus Lunch', faculty: '-' },
-          { slot: '01:45 - 04:45', period: 'PERIOD 5-7', title: 'Algorithms & Networks Lab', faculty: 'Batch B1/B2/B3' },
-        ],
-      },
-      constraintVerifications: [
-        { name: 'Faculty Concurrency & Collision Check', status: 'PASS', detail: '0 overlaps. Prof. S. Malathi has no concurrent teaching hours scheduled in Period 1.' },
-        { name: 'Cohort Timetable Integrity', status: 'PASS', detail: '0 clashes for 5th Sem CSE-B. Students retain their scheduled physical presence in Room PJ-302.' },
-        { name: 'Room & Venue Collision Integrity', status: 'PASS', detail: 'PJ-302 occupancy confirmed. No parallel room reservation exists in Master Allocation Matrix.' },
-        { name: 'NEP 2022 Lab Continuity Compliance', status: 'PASS', detail: '100% preserved. Afternoon 3-hour integrated laboratory practical block (Periods 5–7) remains untouched.' },
-        { name: 'AICTE Workload Regulatory Threshold', status: 'PASS', detail: 'Compliant. Prof. S. Malathi load advances from 15.0h to 16.0h/wk (well below 18.0h AICTE ceiling).' },
-      ],
-      impactDeltas: {
-        studentsEnrolled: 64,
-        sessionsShifted: 1,
-        roomVariancePct: 0.0,
-        curricularDeviationPct: 0.5,
-        workloadBalance: {
-          profSMalathi: '+1.0 h/wk (16.0h / 18.0h)',
-          drARamanathan: '-1.0 h/wk (14.0h / 16.0h)',
+          // Real DB-backed candidate comparison (TASK-502)
+          solverRouter.get('/candidates/compare', async (req: Request, res: Response, next: NextFunction) => {
+            try {
+              const departmentId =
+                typeof req.query.departmentId === 'string' && req.query.departmentId.trim()
+                  ? req.query.departmentId.trim()
+                  : null;
+              const programId =
+                typeof req.query.programId === 'string' && req.query.programId.trim()
+                  ? req.query.programId.trim()
+                  : null;
+              const academicTermId =
+                typeof req.query.academicTermId === 'string' && req.query.academicTermId.trim()
+                  ? req.query.academicTermId.trim()
+                  : null;
+              const runId =
+                typeof req.query.runId === 'string' && req.query.runId.trim()
+                  ? req.query.runId.trim()
+                  : null;
+
+              const [departments, programs, academicTerms] = await Promise.all([
+                prisma.department.findMany({ orderBy: { code: 'asc' } }),
+                prisma.program.findMany({ orderBy: { code: 'asc' } }),
+                prisma.academicTerm.findMany({ orderBy: { createdAt: 'desc' } }),
+              ]);
+
+              const selectedDept = departmentId
+                ? departments.find((d) => d.id === departmentId) ?? null
+                : null;
+              if (departmentId && !selectedDept) {
+                return res.status(404).json({
+                  error: { code: 'DEPARTMENT_NOT_FOUND', message: `Department '${departmentId}' was not found.` },
+                });
+              }
+
+              const selectedProg = programId
+                ? programs.find((p) => p.id === programId) ?? null
+                : null;
+              if (programId && (!selectedProg || (departmentId && selectedProg.departmentId !== departmentId))) {
+                return res.status(404).json({
+                  error: {
+                    code: 'PROGRAM_NOT_FOUND',
+                    message: `Program '${programId}' was not found within the selected department scope.`,
+                  },
+                  });
+              }
+
+              const selectedTerm = academicTermId
+                ? academicTerms.find((t) => t.id === academicTermId) ?? null
+                : academicTerms.find((t) => t.status === 'ACTIVE') ?? academicTerms[0] ?? null;
+
+              if (academicTermId && !selectedTerm) {
+                return res.status(404).json({
+                  error: { code: 'ACADEMIC_TERM_NOT_FOUND', message: `Academic term '${academicTermId}' was not found.` },
+                });
+              }
+
+              const effectiveDeptId = departmentId ?? selectedProg?.departmentId ?? null;
+              const effectiveTermId = selectedTerm?.id ?? null;
+
+              // Fetch available completed runs matching the requested scope
+              const runScopeWhere: any = {
+                status: 'COMPLETED',
+                algorithmCode: { not: 'DEMO_SIMULATED' },
+                ...(effectiveTermId ? { academicTermId: effectiveTermId } : {}),
+                ...(effectiveDeptId || programId
+                  ? {
+                    candidates: {
+                      some: {
+                        sessions: {
+                          some: {
+                            section: {
+                              ...(effectiveDeptId ? { departmentId: effectiveDeptId } : {}),
+                              ...(programId ? { programId } : {}),
+                            },
+                          },
+                        },
+                      },
+                    },
+                  }
+                  : {}),
+              };
+
+              const availableRuns = await prisma.optimizationRun.findMany({
+                where: runScopeWhere,
+                orderBy: { createdAt: 'desc' },
+                take: 15,
+                include: {
+                  _count: { select: { candidates: true } },
+                },
+              });
+
+              let targetRun:
+                | (Awaited<ReturnType<typeof prisma.optimizationRun.findUnique>> & {
+                  academicTerm: { academicYearLabel: string; termLabel: string };
+                })
+                | null = null;
+
+              if (runId) {
+                const foundRun = await prisma.optimizationRun.findUnique({
+                  where: { id: runId },
+                  include: { academicTerm: true },
+                });
+                if (!foundRun) {
+                  return res.status(404).json({
+                    error: { code: 'RUN_NOT_FOUND', message: `Optimization run '${runId}' was not found.` },
+                  });
+                }
+                if (foundRun.status !== 'COMPLETED' || foundRun.algorithmCode === 'DEMO_SIMULATED') {
+                  return res.status(400).json({
+                    error: {
+                      code: 'INVALID_RUN_STATUS',
+                      message: `Optimization run '${runId}' is not a completed real optimization run (status=${foundRun.status}).`,
+                    },
+                  });
+                }
+                if (academicTermId && foundRun.academicTermId !== academicTermId) {
+                  return res.status(404).json({
+                    error: {
+                      code: 'RUN_SCOPE_MISMATCH',
+                      message: `Optimization run '${runId}' does not belong to academic term '${academicTermId}'.`,
+                    },
+                  });
+                }
+                targetRun = foundRun;
+              } else if (availableRuns.length > 0) {
+                targetRun = await prisma.optimizationRun.findUnique({
+                  where: { id: availableRuns[0].id },
+                  include: { academicTerm: true },
+                });
+              }
+
+              const effectiveDeptForLabel =
+                selectedDept ??
+                (effectiveDeptId ? departments.find((d) => d.id === effectiveDeptId) ?? null : null);
+
+              const scopeLabel = {
+                department: effectiveDeptForLabel ? `${effectiveDeptForLabel.name} (${effectiveDeptForLabel.code})` : 'All Departments',
+                program: selectedProg ? `${selectedProg.name} (${selectedProg.code})` : 'All Programs',
+                academicTerm: selectedTerm ? `${selectedTerm.academicYearLabel} (${selectedTerm.termLabel})` : 'No Academic Term',
+              };
+
+              const availableFilters = {
+                departments: departments.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+                programs: programs.map((p) => ({
+                  id: p.id,
+                  departmentId: p.departmentId,
+                  code: p.code,
+                  name: p.name,
+                })),
+                academicTerms: academicTerms.map((t) => ({
+                  id: t.id,
+                  academicYearLabel: t.academicYearLabel,
+                  termLabel: t.termLabel,
+                  status: t.status,
+                })),
+                runs: availableRuns.map((r) => ({
+                  id: r.id,
+                  algorithmCode: r.algorithmCode,
+                  solverStatus: r.solverStatus ?? null,
+                  createdAt: r.createdAt.toISOString(),
+                  candidateCount: r._count.candidates,
+                })),
+              };
+
+              if (!targetRun) {
+                const emptyPayload: CandidateComparisonResponse = {
+                  hasData: false,
+                  scopeLabel,
+                  appliedFilters: {
+                    departmentId,
+                    programId,
+                    academicTermId: effectiveTermId,
+                    runId: null,
+                  },
+                  availableFilters,
+                  run: null,
+                  candidates: [],
+                };
+                return res.json({ data: emptyPayload });
+              }
+
+              const dbCandidates = await prisma.optimizationCandidate.findMany({
+                where: { optimizationRunId: targetRun.id },
+                orderBy: { candidateNumber: 'asc' },
+                include: {
+                  sessions: {
+                    include: {
+                      subjectOffering: { include: { subject: true } },
+                      section: true,
+                      faculty: { include: { user: true } },
+                      room: true,
+                    },
+                    orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+                  },
+                },
+              });
+
+              const candidateIds = dbCandidates.map((c) => c.id);
+              const publishedVersions = candidateIds.length
+                ? await prisma.timetableVersion.findMany({
+                  where: { optimizationCandidateId: { in: candidateIds } },
+                  orderBy: { versionNumber: 'desc' },
+                })
+                : [];
+              const publishedByCandidateId = new Map<string, { id: string; versionNumber: number }>();
+              for (const pv of publishedVersions) {
+                if (pv.optimizationCandidateId && !publishedByCandidateId.has(pv.optimizationCandidateId)) {
+                  publishedByCandidateId.set(pv.optimizationCandidateId, {
+                    id: pv.id,
+                    versionNumber: pv.versionNumber,
+                  });
+                }
+              }
+
+              const candidatesPayload: CandidateComparisonResponse['candidates'] = dbCandidates.map((cand) => {
+                let parsedMetrics: Record<string, unknown> = {};
+                try {
+                  parsedMetrics = JSON.parse(cand.metrics || '{}');
+                } catch {
+                  parsedMetrics = {};
+                }
+
+                const sectionMap = new Map<
+                  string,
+                  {
+                    sectionId: string;
+                    sectionCode: string;
+                    semesterNumber: number;
+                    sessionCount: number;
+                    labSessionCount: number;
+                    totalPeriods: number;
+                  }
+                >();
+
+                for (const s of cand.sessions) {
+                  const existing = sectionMap.get(s.sectionId) || {
+                    sectionId: s.sectionId,
+                    sectionCode: s.section.sectionCode,
+                    semesterNumber: s.section.semesterNumber,
+                    sessionCount: 0,
+                    labSessionCount: 0,
+                    totalPeriods: 0,
+                  };
+                  existing.sessionCount += 1;
+                  if (s.sessionKind === 'LAB') existing.labSessionCount += 1;
+                  existing.totalPeriods += s.durationPeriods || 1;
+                  sectionMap.set(s.sectionId, existing);
+                }
+
+                const sortedSessions = [...cand.sessions].sort((a, b) => {
+                  const secCmp = a.section.sectionCode.localeCompare(b.section.sectionCode);
+                  if (secCmp !== 0) return secCmp;
+                  if (a.dayOfWeek !== b.dayOfWeek) return a.dayOfWeek - b.dayOfWeek;
+                  return a.startTime.localeCompare(b.startTime);
+                });
+
+                const pubInfo = publishedByCandidateId.get(cand.id) ?? null;
+
+                return {
+                  id: cand.id,
+                  optimizationRunId: cand.optimizationRunId,
+                  candidateNumber: cand.candidateNumber,
+                  label: cand.label,
+                  solverStatus: cand.solverStatus,
+                  isFeasible: cand.isFeasible,
+                  hardViolationCount: cand.hardViolationCount,
+                  softPenalty: cand.softPenalty ?? null,
+                  qualityScore: cand.qualityScore ?? null,
+                  unscheduledSessionCount: cand.unscheduledSessionCount,
+                  sessionCount: cand.sessions.length,
+                  metrics: parsedMetrics,
+                  explanation: cand.explanation ?? null,
+                  isPublished: Boolean(pubInfo),
+                  publishedVersionId: pubInfo?.id ?? null,
+                  publishedVersionNumber: pubInfo?.versionNumber ?? null,
+                  sectionSummaries: Array.from(sectionMap.values()).sort((a, b) =>
+                    a.sectionCode.localeCompare(b.sectionCode)
+                  ),
+                  sessionsPreview: sortedSessions.slice(0, 60).map((s) => ({
+                    id: s.id,
+                    subjectOfferingId: s.subjectOfferingId,
+                    subjectCode: s.subjectOffering.subject.subjectCode,
+                    subjectName: s.subjectOffering.subject.name,
+                    sectionId: s.sectionId,
+                    sectionCode: s.section.sectionCode,
+                    facultyId: s.facultyId,
+                    facultyName: s.faculty.user.displayName,
+                    roomId: s.roomId,
+                    roomCode: s.room.roomCode,
+                    dayOfWeek: s.dayOfWeek,
+                    dayCode: DAY_NUMBER_TO_CODE[s.dayOfWeek] || `D${s.dayOfWeek}`,
+                    startTime: s.startTime,
+                    endTime: s.endTime,
+                    durationPeriods: s.durationPeriods,
+                    sessionKind: s.sessionKind,
+                    batchId: s.batchId ?? null,
+                  })),
+                };
+              });
+
+              const responsePayload: CandidateComparisonResponse = {
+                hasData: candidatesPayload.length > 0,
+                scopeLabel,
+                appliedFilters: {
+                  departmentId,
+                  programId,
+                  academicTermId: targetRun.academicTermId,
+                  runId: targetRun.id,
+                },
+                availableFilters,
+                run: {
+                  id: targetRun.id,
+                  algorithmCode: targetRun.algorithmCode,
+                  status: targetRun.status,
+                  solverStatus: targetRun.solverStatus ?? null,
+                  runtimeMs: targetRun.runtimeMs !== null ? Number(targetRun.runtimeMs) : null,
+                  createdAt: targetRun.createdAt.toISOString(),
+                  completedAt: targetRun.completedAt ? targetRun.completedAt.toISOString() : null,
+                  academicTermLabel: `${targetRun.academicTerm.academicYearLabel} (${targetRun.academicTerm.termLabel})`,
+                },
+                candidates: candidatesPayload,
+              };
+
+              return res.json({ data: responsePayload });
+            } catch (err) {
+              return next(err);
+            }
+          });
+
+          // Publish a validated OptimizationCandidate to a non-destructive TimetableVersion (TASK-502)
+          solverRouter.post('/publish', requireAuth, requirePublishAuthority, async (req: Request, res: Response, next: NextFunction) => {
+            try {
+    const parsed = PublishCandidateRequestSchema.safeParse(req.body);
+if (!parsed.success) {
+  return res.status(400).json({
+    error: {
+      code: 'VALIDATION_ERROR',
+      message: 'Invalid publish request payload.',
+      details: parsed.error.flatten(),
+    },
+  });
+}
+
+const { candidateId, departmentId, programId, academicTermId, publicationNote } = parsed.data;
+
+const candidate = await prisma.optimizationCandidate.findUnique({
+  where: { id: candidateId },
+  include: {
+    optimizationRun: {
+      include: { academicTerm: true },
+    },
+    sessions: {
+      include: {
+        section: true,
+        batch: true,
+        faculty: true,
+        room: true,
+        subjectOffering: {
+          include: {
+            subject: true,
+            facultyAssignments: { where: { status: 'ACTIVE' } },
+          },
         },
       },
     },
+  },
+    });
+
+if (!candidate) {
+  return res.status(404).json({
+    error: { code: 'CANDIDATE_NOT_FOUND', message: `Optimization candidate '${candidateId}' was not found.` },
   });
+}
+
+if (
+  candidate.optimizationRun.status !== 'COMPLETED' ||
+  candidate.optimizationRun.algorithmCode === 'DEMO_SIMULATED'
+) {
+  return res.status(400).json({
+    error: {
+      code: 'INVALID_CANDIDATE_RUN',
+      message: `Candidate '${candidateId}' belongs to a non-completed or demo run (status=${candidate.optimizationRun.status}).`,
+    },
+      });
+    }
+
+if (
+  !candidate.isFeasible ||
+  candidate.hardViolationCount > 0 ||
+  candidate.unscheduledSessionCount > 0
+) {
+  return res.status(400).json({
+    error: {
+      code: 'INFEASIBLE_CANDIDATE',
+      message: `Candidate '${candidate.label}' is not fully feasible and cannot be published.`,
+    },
+  });
+}
+
+if (candidate.sessions.length === 0) {
+  return res.status(400).json({
+    error: {
+      code: 'INCOMPLETE_CANDIDATE_SCHEDULE',
+      message: `Candidate '${candidate.label}' has zero persisted sessions and cannot be published.`,
+    },
+  });
+}
+
+const invalidSession = candidate.sessions.find((session) => {
+  const hasValidTime =
+    /^([01]\d|2[0-3]):[0-5]\d$/.test(session.startTime) &&
+    /^([01]\d|2[0-3]):[0-5]\d$/.test(session.endTime) &&
+    session.startTime < session.endTime;
+  const facultyIsAssigned = session.subjectOffering.facultyAssignments.some(
+    (assignment) => assignment.facultyId === session.facultyId
+  );
+
+  return (
+    session.dayOfWeek < 1 ||
+    session.dayOfWeek > 6 ||
+    session.durationPeriods < 1 ||
+    !hasValidTime ||
+    session.subjectOffering.sectionId !== session.sectionId ||
+    session.subjectOffering.academicTermId !== candidate.optimizationRun.academicTermId ||
+    (session.batch !== null && session.batch.sectionId !== session.sectionId) ||
+    !session.subjectOffering.subject.isActive ||
+    session.section.status !== 'ACTIVE' ||
+    session.faculty.status !== 'ACTIVE' ||
+    !session.room.isActive ||
+    !facultyIsAssigned
+  );
+});
+
+if (invalidSession) {
+  return res.status(400).json({
+    error: {
+      code: 'INVALID_CANDIDATE_SESSION',
+      message: `Candidate '${candidate.label}' contains an invalid or stale persisted session and cannot be published.`,
+      details: { candidateSessionId: invalidSession.id },
+    },
+  });
+}
+
+// Verify academic scope
+if (academicTermId && candidate.optimizationRun.academicTermId !== academicTermId) {
+  return res.status(400).json({
+    error: {
+      code: 'SCOPE_MISMATCH',
+      message: `Candidate belongs to academic term '${candidate.optimizationRun.academicTermId}', not '${academicTermId}'.`,
+    },
+  });
+}
+
+const candidateDeptIds = Array.from(new Set(candidate.sessions.map((s) => s.section.departmentId)));
+if (departmentId) {
+  const dept = await prisma.department.findUnique({ where: { id: departmentId } });
+  if (!dept) {
+    return res.status(404).json({
+      error: { code: 'DEPARTMENT_NOT_FOUND', message: `Department '${departmentId}' was not found.` },
+    });
+  }
+  if (!candidateDeptIds.includes(departmentId)) {
+    return res.status(400).json({
+      error: {
+        code: 'SCOPE_MISMATCH',
+        message: `Candidate sessions do not belong to department '${departmentId}'.`,
+      },
+    });
+  }
+}
+
+if (programId) {
+  const prog = await prisma.program.findUnique({ where: { id: programId } });
+  if (!prog) {
+    return res.status(404).json({
+      error: { code: 'PROGRAM_NOT_FOUND', message: `Program '${programId}' was not found.` },
+    });
+  }
+  const candidateProgIds = candidate.sessions
+    .map((s) => s.section.programId)
+    .filter((pid): pid is string => Boolean(pid));
+  if (!candidateProgIds.includes(programId)) {
+    return res.status(400).json({
+      error: {
+        code: 'SCOPE_MISMATCH',
+        message: `Candidate sessions do not belong to program '${programId}'.`,
+      },
+    });
+  }
+}
+
+const targetDepartmentId = departmentId ?? candidateDeptIds[0];
+
+// Prevent duplicate publish of the same candidate
+const existingForCandidate = await prisma.timetableVersion.findFirst({
+  where: { optimizationCandidateId: candidate.id },
+});
+if (existingForCandidate) {
+  return res.status(409).json({
+    error: {
+      code: 'CANDIDATE_ALREADY_PUBLISHED',
+      message: `Candidate '${candidate.label}' has already been published as TimetableVersion v${existingForCandidate.versionNumber}.`,
+      details: {
+        timetableVersionId: existingForCandidate.id,
+        versionNumber: existingForCandidate.versionNumber,
+      },
+    },
+  });
+}
+
+const actorUserId = req.user!.userId;
+const authenticatedActor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { id: true } });
+if (!authenticatedActor) {
+  return res.status(401).json({
+    error: { code: 'AUTHENTICATED_ACTOR_NOT_FOUND', message: 'Authenticated user is no longer available.' },
+  });
+}
+
+const now = new Date();
+const publishOnce = () => prisma.$transaction(async (tx) => {
+  // Re-check inside transaction to guard against concurrent duplicate publish
+  const raceCheck = await tx.timetableVersion.findFirst({
+    where: { optimizationCandidateId: candidate.id },
+  });
+  if (raceCheck) {
+    throw new SolverPayloadError(
+      409,
+      'CANDIDATE_ALREADY_PUBLISHED',
+      `Candidate '${candidate.label}' was already published as TimetableVersion v${raceCheck.versionNumber}.`
+    );
+  }
+
+  let timetable = await tx.timetable.findFirst({
+    where: {
+      academicTermId: candidate.optimizationRun.academicTermId,
+      departmentId: targetDepartmentId,
+      status: 'ACTIVE',
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (!timetable) {
+    timetable = await tx.timetable.create({
+      data: {
+        academicTermId: candidate.optimizationRun.academicTermId,
+        departmentId: targetDepartmentId,
+        name: `${candidate.optimizationRun.academicTerm.academicYearLabel} ${candidate.optimizationRun.academicTerm.termLabel} Timetable`,
+        scopeType: 'DEPARTMENT',
+        status: 'ACTIVE',
+        createdById: actorUserId,
+      },
+    });
+  }
+
+  // Preserve version history: never overwrite existing published versions
+  const latestVersion = await tx.timetableVersion.findFirst({
+    where: { timetableId: timetable.id },
+    orderBy: { versionNumber: 'desc' },
+  });
+  const latestPublished = await tx.timetableVersion.findFirst({
+    where: { timetableId: timetable.id, status: 'PUBLISHED' },
+    orderBy: { versionNumber: 'desc' },
+  });
+
+  const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
+  const summaryText =
+    publicationNote?.trim() ||
+    `Published ${candidate.label} (${candidate.sessions.length} sessions) from OptimizationRun ${candidate.optimizationRunId}.`;
+
+  const version = await tx.timetableVersion.create({
+    data: {
+      timetableId: timetable.id,
+      versionNumber: nextVersionNumber,
+      status: 'PUBLISHED',
+      sourceType: 'OPTIMIZER',
+      optimizationCandidateId: candidate.id,
+      validationStatus: 'PASSED',
+      hardViolationCount: candidate.hardViolationCount,
+      softPenalty: candidate.softPenalty ?? null,
+      createdById: actorUserId,
+      approvedById: actorUserId,
+      publishedById: actorUserId,
+      approvedAt: now,
+      publishedAt: now,
+      supersedesVersionId: latestPublished?.id ?? null,
+      changeSummary: summaryText,
+    },
+  });
+
+  await tx.timetableSession.createMany({
+    data: candidate.sessions.map((s) => ({
+      timetableVersionId: version.id,
+      subjectOfferingId: s.subjectOfferingId,
+      facultyId: s.facultyId,
+      roomId: s.roomId,
+      sectionId: s.sectionId,
+      batchId: s.batchId ?? null,
+      dayOfWeek: s.dayOfWeek,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      durationPeriods: s.durationPeriods,
+      sessionKind: s.sessionKind,
+      groupKey: s.groupKey ?? null,
+    })),
+  });
+
+  await tx.timetablePublication.create({
+    data: {
+      timetableVersionId: version.id,
+      publishedById: actorUserId,
+      publishedAt: now,
+      publicationNote: publicationNote?.trim() || null,
+    },
+  });
+
+  const auditLog = await tx.auditLog.create({
+    data: {
+      actorUserId,
+      action: 'PUBLISH_OPTIMIZATION_CANDIDATE',
+      resourceType: 'TIMETABLE_VERSION',
+      resourceId: version.id,
+      scope: JSON.stringify({
+        academicTermId: candidate.optimizationRun.academicTermId,
+        departmentId: targetDepartmentId,
+        programId: programId ?? null,
+        optimizationRunId: candidate.optimizationRunId,
+        optimizationCandidateId: candidate.id,
+      }),
+      beforeState: latestPublished
+        ? JSON.stringify({
+          previousPublishedVersionId: latestPublished.id,
+          previousVersionNumber: latestPublished.versionNumber,
+        })
+        : null,
+      afterState: JSON.stringify({
+        timetableId: timetable.id,
+        timetableVersionId: version.id,
+        versionNumber: version.versionNumber,
+        sessionsPublished: candidate.sessions.length,
+        supersedesVersionId: latestPublished?.id ?? null,
+      }),
+    },
+  });
+
+  return {
+    timetable,
+    version,
+    auditLog,
+    sessionsPublished: candidate.sessions.length,
+    publicationNote: publicationNote?.trim() || null,
+  };
+}, { isolationLevel: 'Serializable' });
+
+let published: Awaited<ReturnType<typeof publishOnce>> | undefined;
+for (let attempt = 1; attempt <= PUBLISH_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+  try {
+    published = await publishOnce();
+    break;
+  } catch (error) {
+    if (!isRetryablePublishConflict(error)) {
+      throw error;
+    }
+
+    // A failed transaction never writes partial timetable data. Re-checking on
+    // the next attempt gives concurrent requests the already-published result
+    // (same candidate) or the next version in the preserved version chain.
+    if (attempt === PUBLISH_TRANSACTION_MAX_ATTEMPTS) {
+      throw new SolverPayloadError(
+        409,
+        'PUBLISH_CONFLICT',
+        'A concurrent timetable publication could not be resolved. Please retry the request.'
+      );
+    }
+  }
+}
+
+if (!published) {
+  throw new SolverPayloadError(500, 'PUBLISH_FAILED', 'Timetable publication did not complete.');
+}
+
+const responsePayload: PublishCandidateResponse = {
+  timetableId: published.timetable.id,
+  timetableVersionId: published.version.id,
+  versionNumber: published.version.versionNumber,
+  status: published.version.status,
+  sourceType: published.version.sourceType,
+  optimizationCandidateId: candidate.id,
+  supersedesVersionId: published.version.supersedesVersionId ?? null,
+  sessionsPublished: published.sessionsPublished,
+  publishedAt: (published.version.publishedAt ?? now).toISOString(),
+  publicationNote: published.publicationNote,
+  auditLogId: published.auditLog.id,
+};
+
+return res.status(201).json({ data: responsePayload });
+  } catch (err) {
+  if (err instanceof SolverPayloadError) {
+    return res.status(err.statusCode).json({
+      error: { code: err.code, message: err.message, details: err.details },
+    });
+  }
+  return next(err);
+}
 });
 

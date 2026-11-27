@@ -181,17 +181,19 @@
 ## Phase 5 — Initial & Dynamic Timetable Generation
 
 - **Start date:** 2026-11-27
-- **Status:** In Progress (`TASK-501` complete; `TASK-502` pending)
+- **Status:** Complete (`TASK-501`, `TASK-502` complete)
 - **Tasks completed:**
   - `TASK-501` — Completed remaining Solver Database Payload and Studio Integration work (building on `buildOptimizerPayloadFromDb()` originally introduced in `TASK-202B`) and hardened optimizer failure/fallback handling: replaced hardcoded `GET /api/v1/solver/studio-config` with scoped Prisma queries, added `programId` & scope validation, removed misleading `"falling back to mock"` warnings in `callOptimizer()`, classified HTTP `503`/timeout `504`/malformed JSON `502`/invalid schema `502`/empty `502` failures into `FAILED` `OptimizationRun` records without fabricating candidates, wrapped `OptimizationRun` + `OptimizationCandidate` persistence in `prisma.$transaction`, isolated explicit `demoMode` (`DEMO_SIMULATED`, `canPublish: false`, 0 persisted candidates), and wired `apps/web/src/features/solver/SolverStudio.tsx` to distinguish success, failure, and demo states.
+  - `TASK-502` — Validated optimizer slots against `SubjectOffering`/`Faculty`/`Room`/`BellSchedule` and persisted `CandidateSession` rows atomically inside `prisma.$transaction` in `POST /api/v1/solver/run`; replaced hardcoded `cand-a/b/c` in `GET /api/v1/solver/candidates/compare` with real `OptimizationRun`, `OptimizationCandidate`, `CandidateSession`, and `TimetableVersion` publication queries; implemented non-destructive `POST /api/v1/solver/publish` creating `Timetable`, `TimetableVersion` (with `supersedesVersionId` history preservation and `409` duplicate guard), `TimetableSession`, `TimetablePublication`, and actor-attributed `AuditLog`. Final hardening makes authentication mandatory (`401`), restricts publishing to `HOD`/`DEPT_HEAD`/`ADMIN`/`DEAN`/`PLATFORM_ADMIN` (`403`), verifies feasible complete sessions, and uses serializable transaction retries to prevent concurrent version collisions; rewrote `apps/web/src/features/candidates/CandidateComparison.tsx` with real API integration, scope filters, session summaries/preview, explicit publish confirmation, and DB-driven published status.
 - **Files changed:**
   - `packages/contracts/src/optimization.ts` (modified)
   - `apps/api/src/modules/solver/solver.router.ts` (modified)
   - `apps/web/src/features/solver/SolverStudio.tsx` (modified)
+  - `apps/web/src/features/candidates/CandidateComparison.tsx` (modified)
 - **Commands executed & test results:**
   - `npm run build --workspace=packages/contracts`, `npx tsc --noEmit -p apps/web/tsconfig.json`, `npx tsc --noEmit -p apps/api/tsconfig.json`, `npm run build --workspace=apps/api`, `npm run build --workspace=apps/web`: ALL PASS (Exit 0)
-  - Disposable SQLite Express HTTP integration tests (`test_solver_studio_501.ts` & `test_solver_hardening_501.ts`): ALL PASS (`ALL_501_ASSERTIONS_PASSED`, `ALL_501_HARDENING_ASSERTIONS_PASSED`, Exit 0)
+  - Disposable SQLite Express HTTP integration tests (`test_solver_studio_501.ts`, `test_solver_hardening_501.ts`, `test_candidate_502.ts`, `test_task502_hardening.ts`): ALL PASS (`ALL_501_ASSERTIONS_PASSED`, `ALL_501_HARDENING_ASSERTIONS_PASSED`, `ALL_502_ASSERTIONS_PASSED`, `ALL_502_HARDENING_ASSERTIONS_PASSED`, Exit 0)
 - **Known limitations:**
-  - `CandidateSession` persistence, `GET /api/v1/solver/candidates/compare`, and `POST /api/v1/solver/publish` remain deferred to `TASK-502`.
+  - Live browser UI rendering was not executed against a running dev server; frontend integration was verified via `tsc` + `vite build` and contract schema validation against the Express API tests.
   - Existing local and Supabase databases were not modified.
-- **Remaining tasks:** `TASK-502` in Phase 5 (plus Phase 6 through Phase 10).
+- **Remaining tasks:** Phase 6 (`TASK-601`, `TASK-602`) through Phase 10 (`TASK-1001`).
